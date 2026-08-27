@@ -1,0 +1,10 @@
+# shell脚本强制LF换行，husky钩子核心
+.husky/**/*.sh text eol=lf
+*.sh text eol=lf
+
+# js/ts普通文件：windows本地CRLF，仓库存LF
+*.js text
+*.ts text
+*.tsx text
+*.vue text
+*.md text
