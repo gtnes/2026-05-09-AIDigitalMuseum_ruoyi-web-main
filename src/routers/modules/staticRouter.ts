@@ -39,7 +39,17 @@ export const layoutRouter: RouteRecordRaw[] = [
   },
 ];
 
-export const staticRouter: RouteRecordRaw[] = [];
+export const staticRouter: RouteRecordRaw[] = [
+  {
+    path: '/app-chat',
+    name: 'appChat',
+    component: () => import('@/pages/app-chat/index.vue'),
+    meta: {
+      title: 'AI对话',
+      icon: 'ChatDotRound',
+    },
+  },
+];
 
 export const errorRouter = [
   {
