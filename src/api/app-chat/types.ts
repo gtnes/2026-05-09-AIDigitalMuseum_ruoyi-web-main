@@ -6,10 +6,8 @@ export interface AppChatApp {
   appName: string;
   appType: string;
   providerCode: string;
-  apiHost: string;
-  appDesc?: string;
+  appDescribe?: string;
   appShow?: string;
-  remark?: string;
 }
 
 /**

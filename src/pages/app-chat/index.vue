@@ -2,6 +2,7 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
+import { ChatDotRound } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
@@ -32,10 +33,34 @@ const popoverRef = ref<any>(null);
 
 const urlAppId = computed(() => route.query.appId as string);
 
+// 输入框上方功能按钮
+const featureOptions = [
+  { key: 'web', label: '联网搜索', icon: 'Search' },
+  { key: 'authority', label: '权威资讯', icon: 'Reading' },
+  { key: 'deep', label: '深度思考', icon: 'MagicStick' },
+];
+const activeFeatures = ref<string[]>(['authority']);
+
+// 切换功能按钮选中状态
+function toggleFeature(key: string) {
+  const index = activeFeatures.value.indexOf(key);
+  if (index >= 0)
+    activeFeatures.value.splice(index, 1);
+  else
+    activeFeatures.value.push(key);
+}
+
 // 复制 / 编辑
 const copyIconMap = ref<Record<number, string>>({});
 const editingMessageKeys = ref<number[]>([]);
 const editedContents = ref<Record<number, string>>({});
+
+// 头像加载失败时清空 appShow，回退到默认图标
+const avatarErrorKeys = ref<Set<number>>(new Set());
+function onAvatarError() {
+  if (currentApp.value)
+    avatarErrorKeys.value.add(currentApp.value.id);
+}
 
 // SSE
 let eventSource: EventSource | null = null;
@@ -307,7 +332,31 @@ function sendMessageByKey(key: number) {
 <template>
   <div class="app-chat-page">
     <div class="chat-warp">
-      <BubbleList ref="bubbleListRef" :list="bubbleItems" max-height="calc(100vh - 220px)">
+      <!-- 顶部智能体头像与名称 -->
+      <div v-if="currentApp" class="agent-header">
+        <img
+          v-if="currentApp.appShow && !avatarErrorKeys.has(currentApp.id)"
+          class="agent-avatar"
+          :src="currentApp.appShow"
+          :alt="currentApp.appName"
+          @error="onAvatarError"
+        >
+        <div v-else class="agent-avatar agent-avatar-fallback">
+          <el-icon :size="28">
+            <ChatDotRound />
+          </el-icon>
+        </div>
+        <div class="agent-name">
+          {{ currentApp.appName }}
+        </div>
+      </div>
+
+      <BubbleList
+        ref="bubbleListRef"
+        class="chat-bubble-list"
+        :list="bubbleItems"
+        max-height="100%"
+      >
         <template #content="{ item }">
           <XMarkdown
             v-if="item.content && item.role === 'system'"
@@ -363,6 +412,22 @@ function sendMessageByKey(key: number) {
       </BubbleList>
 
       <div class="sender-wrapper">
+        <!-- 功能按钮：输入框外部左上方 -->
+        <div class="feature-buttons">
+          <div
+            v-for="opt in featureOptions"
+            :key="opt.key"
+            class="feature-btn"
+            :class="{ 'is-active': activeFeatures.includes(opt.key) }"
+            @click="toggleFeature(opt.key)"
+          >
+            <el-icon :size="12">
+              <component :is="opt.icon" />
+            </el-icon>
+            <span>{{ opt.label }}</span>
+          </div>
+        </div>
+
         <Sender
           ref="senderRef"
           v-model="inputValue"
@@ -379,10 +444,9 @@ function sendMessageByKey(key: number) {
           @cancel="cancelSSE"
         >
           <template #prefix>
-            <div class="sender-prefix-container">
-              <!-- URL 无 appId 时显示应用切换 -->
+            <!-- URL 无 appId 时显示应用切换；有 appId 时隐藏模型选择 -->
+            <div v-if="!urlAppId" class="sender-prefix-container">
               <Popover
-                v-if="!urlAppId"
                 ref="popoverRef"
                 placement="top-start"
                 :offset="[4, 0]"
@@ -413,27 +477,21 @@ function sendMessageByKey(key: number) {
                       @click="selectApp(app)"
                     >
                       <div>{{ app.appName }}</div>
-                      <div v-if="app.appDesc" class="app-sub font-size-11px opacity-60">
-                        {{ app.appDesc }}
+                      <div v-if="app.appDescribe" class="app-sub font-size-11px opacity-60">
+                        {{ app.appDescribe }}
                       </div>
                     </div>
                   </div>
                 </div>
               </Popover>
-
-              <!-- URL 有 appId 时仅展示当前应用 -->
-              <div
-                v-else
-                class="app-select-box readonly select-none flex items-center gap-4px p-10px rounded-10px font-size-12px"
-              >
-                <SvgIcon name="models" size="12" />
-                <div class="app-select-box-text font-size-12px">
-                  {{ currentApp?.appName || '应用对话' }}
-                </div>
-              </div>
             </div>
           </template>
         </Sender>
+
+        <!-- 底部免责声明 -->
+        <div class="sender-footer-tip">
+          内容由阿里AI大模型生成，仅供参考
+        </div>
       </div>
     </div>
   </div>
@@ -476,15 +534,20 @@ function sendMessageByKey(key: number) {
   .chat-warp {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
     box-sizing: border-box;
     width: 100%;
     max-width: 800px;
-    min-height: 100vh;
+    height: 100vh;
     padding: 0 10px 10px;
+    // 消息列表：占据剩余空间并内部滚动，避免把输入框挤出屏幕
+    .chat-bubble-list {
+      flex: 1;
+      min-height: 0;
+    }
     // 输入框容器
     .sender-wrapper {
       position: relative;
+      flex-shrink: 0;
       width: 100%;
     }
   }
@@ -527,6 +590,37 @@ function sendMessageByKey(key: number) {
     }
   }
 }
+// 顶部智能体头像与名称
+.agent-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  padding: 24px 0 10px 0;
+}
+// 圆形头像
+.agent-avatar {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border: 2px solid rgba(var(--theme-primary-rgb), 0.25);
+  border-radius: 50%;
+}
+// 无图标时的默认头像：浅棕背景 + 对话图标
+.agent-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--theme-primary-rgb), 0.1);
+  color: var(--theme-primary);
+}
+// 智能体名称
+.agent-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #4e4e52;
+}
+
 // 用户消息气泡：宽度自适应文字内容，并靠右对齐
 .user-bubble {
   box-sizing: border-box;
@@ -616,6 +710,52 @@ function sendMessageByKey(key: number) {
   align-items: center;
   width: 100%;
 }
+// 功能按钮组：输入框外部左上方
+.feature-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+// 单个功能按钮：胶囊样式，可点击切换
+.feature-btn {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 10px;
+  color: #8f9095;
+  user-select: none;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #e4e7ed;
+  border-radius: 999px;
+  // 禁用移动端双击缩放，避免第二次点击被浏览器吞掉导致无法取消激活
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.2s ease;
+  // 悬停样式仅在有真实鼠标的设备上生效，
+  // 触屏设备点击后 :hover 会粘滞，导致按钮看起来无法取消激活
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: var(--theme-primary);
+      border-color: var(--theme-primary);
+    }
+  }
+  // 选中态：主题棕色高亮
+  &.is-active {
+    color: var(--theme-primary);
+    background: rgba(var(--theme-primary-rgb), 0.06);
+    border-color: var(--theme-primary);
+  }
+}
+// 输入框下方免责声明
+.sender-footer-tip {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #a8abb2;
+  text-align: center;
+}
 // 应用选择按钮
 .app-select-box {
   font-weight: 600;
@@ -623,15 +763,10 @@ function sendMessageByKey(key: number) {
   background: rgba(var(--theme-primary-rgb), 0.12);
   border: 1px solid var(--theme-primary);
   transition: all 0.2s ease;
-  // 可点击状态悬停效果
-  &:not(.readonly):hover {
+  // 悬停效果
+  &:hover {
     background-color: rgba(var(--theme-primary-rgb), 0.2);
     border-color: #8a6243;
-  }
-  // 只读状态（固定应用）
-  &.readonly {
-    cursor: default;
-    opacity: 0.85;
   }
 }
 // 应用选择框文字：最多显示 5 个字符
