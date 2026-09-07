@@ -40,7 +40,6 @@ const inputValue = ref('');
 const loading = ref(false);
 const sessionId = ref('');
 const senderRef = ref<InstanceType<typeof Sender> | null>(null);
-const popoverRef = ref<any>(null);
 
 const urlAppId = computed(() => route.query.appId as string);
 
@@ -76,43 +75,38 @@ function onAvatarError() {
 // SSE
 let eventSource: EventSource | null = null;
 
-const popoverStyle = ref({
-  width: '200px',
-  padding: '4px',
-  height: 'fit-content',
-  background: 'var(--el-bg-color, #fff)',
-  border: '1px solid var(--el-border-color-light)',
-  borderRadius: '8px',
-  boxShadow: '0 2px 12px 0 rgba(0, 0, 0, 0.1)',
-});
+// 参数错误提示（无appId或应用不存在时显示"系统错误"，不做跳转）
+const pageError = ref('');
 
-// 初始化
-onMounted(async () => {
+// 初始化（按URL中的appId定位应用、建立SSE连接）
+async function init() {
+  // 无appId：参数不合理，直接提示系统错误
+  if (!urlAppId.value) {
+    pageError.value = '系统错误';
+    return;
+  }
+
   // 生成会话ID
   sessionId.value = `app-chat-${Date.now()}`;
 
-  // 获取应用列表
+  // 获取应用列表并按URL中的appId选中应用
   const res = await getAppList();
   appList.value = res.data || [];
-
-  // 获取URL参数中的appId
-  if (urlAppId.value) {
-    const app = appList.value.find(a => String(a.id) === String(urlAppId.value));
-    if (app) {
-      currentApp.value = app;
-    }
-    else {
-      ElMessage.error('应用不存在');
-    }
+  const app = appList.value.find(a => String(a.id) === String(urlAppId.value));
+  if (app) {
+    currentApp.value = app;
   }
   else {
-    if (appList.value.length > 0) {
-      currentApp.value = appList.value[0];
-    }
+    pageError.value = '系统错误';
+    return;
   }
 
   // 建立SSE连接
   connectSSE();
+}
+
+onMounted(() => {
+  init();
 });
 
 onUnmounted(() => {
@@ -274,19 +268,6 @@ function cancelSSE() {
   loading.value = false;
 }
 
-// 选择应用
-function selectApp(app: AppChatApp) {
-  currentApp.value = app;
-  // 清空对话
-  bubbleItems.value = [];
-  // 重新生成sessionId
-  sessionId.value = `app-chat-${Date.now()}`;
-  // 重建SSE连接
-  closeSSE();
-  connectSSE();
-  popoverRef.value?.hide?.();
-}
-
 // 滚动到底部
 function scrollToBottom() {
   nextTick(() => {
@@ -348,7 +329,21 @@ function sendMessageByKey(key: number) {
         <ArrowLeft />
       </el-icon>
     </button>
-    <div class="chat-warp">
+    <!-- 参数错误提示：无appId或应用不存在 -->
+    <div v-if="pageError" class="page-error">
+      <div class="page-error-icon">
+        <el-icon :size="30">
+          <WarningFilled />
+        </el-icon>
+      </div>
+      <div class="page-error-title">
+        系统错误
+      </div>
+      <div class="page-error-desc">
+        页面参数有误，请检查访问链接是否完整
+      </div>
+    </div>
+    <div v-else class="chat-warp">
       <!-- 顶部智能体头像与名称 -->
       <div v-if="currentApp" class="agent-header">
         <img
@@ -461,47 +456,7 @@ function sendMessageByKey(key: number) {
           @cancel="cancelSSE"
         >
           <template #prefix>
-            <!-- URL 无 appId 时显示应用切换；有 appId 时隐藏模型选择 -->
-            <div v-if="!urlAppId" class="sender-prefix-container">
-              <Popover
-                ref="popoverRef"
-                placement="top-start"
-                :offset="[4, 0]"
-                popover-class="popover-content"
-                :popover-style="popoverStyle"
-                trigger="clickTarget"
-              >
-                <template #trigger>
-                  <div
-                    class="app-select-box select-none flex items-center gap-4px p-10px rounded-10px cursor-pointer font-size-12px"
-                  >
-                    <SvgIcon name="models" size="12" />
-                    <div class="app-select-box-text font-size-12px" :title="currentApp?.appName">
-                      {{ currentApp?.appName || '选择应用' }}
-                    </div>
-                  </div>
-                </template>
-
-                <div class="popover-content-box">
-                  <div
-                    v-for="app in appList"
-                    :key="app.id"
-                    class="popover-content-box-items w-full rounded-8px select-none transition-all transition-duration-300 flex items-center hover:cursor-pointer hover:bg-[rgba(0,0,0,.04)]"
-                  >
-                    <div
-                      class="popover-content-box-item p-4px font-size-12px text-overflow line-height-16px"
-                      :class="{ 'is-select': currentApp?.id === app.id }"
-                      @click="selectApp(app)"
-                    >
-                      <div>{{ app.appName }}</div>
-                      <div v-if="app.appDescribe" class="app-sub font-size-11px opacity-60">
-                        {{ app.appDescribe }}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Popover>
-            </div>
+            <div class="sender-prefix-container" />
           </template>
         </Sender>
 
@@ -635,6 +590,61 @@ function sendMessageByKey(key: number) {
   }
   &:active {
     transform: scale(0.94);
+  }
+}
+
+// 参数错误提示：全屏固定居中（不受父容器布局影响）
+.page-error {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  // background: #ffffff;
+  animation: page-error-in 0.35s ease both;
+
+  // 圆形图标底座：柔和暖色背景，呼应页面主题
+  .page-error-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    color: #d4884c;
+    background: linear-gradient(160deg, #fdf3e7 0%, #f9e8d2 100%);
+    border-radius: 50%;
+    box-shadow: 0 10px 24px rgb(212 136 76 / 18%);
+  }
+
+  .page-error-title {
+    color: #4e4e52;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  .page-error-desc {
+    max-width: 260px;
+    color: #a8abb2;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+@keyframes page-error-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -803,50 +813,6 @@ function sendMessageByKey(key: number) {
   font-size: 10px;
   color: #a8abb2;
   text-align: center;
-}
-// 应用选择按钮
-.app-select-box {
-  font-weight: 600;
-  color: var(--theme-primary);
-  background: rgba(var(--theme-primary-rgb), 0.12);
-  border: 1px solid var(--theme-primary);
-  transition: all 0.2s ease;
-  // 悬停效果
-  &:hover {
-    background-color: rgba(var(--theme-primary-rgb), 0.2);
-    border-color: #8a6243;
-  }
-}
-// 应用选择框文字：最多显示 5 个字符
-.app-select-box-text {
-  max-width: 5em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-// 弹出列表中选中项高亮
-.popover-content-box-item.is-select {
-  font-weight: 700;
-  color: var(--theme-primary);
-}
-// 应用选择弹出列表
-.popover-content-box {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 240px;
-  overflow: hidden auto;
-  // 自定义滚动条样式
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-  &::-webkit-scrollbar-track {
-    background: #f5f5f5;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: #cccccc;
-    border-radius: 4px;
-  }
 }
 // Sender 前缀区域自适应宽度
 :deep(.el-sender-prefix) {
