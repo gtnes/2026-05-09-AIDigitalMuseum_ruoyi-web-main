@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { MuseumChatApp, MuseumInfo } from '@/api/museum/types';
 import { Avatar, Compass, Microphone, Share as ShareIcon, VideoPlay } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { cleanUrl, getMuseumInfo } from '@/api/museum';
+import ShareSheet from './components/ShareSheet.vue';
 import VideoList from './components/VideoList.vue';
 import VirtualSpace from './components/VirtualSpace.vue';
 
@@ -91,25 +91,11 @@ watch(museumId, (newId, oldId) => {
     loadMuseum();
 });
 
-// ==================== 分享 ====================
-async function onShare() {
-  const url = window.location.href;
-  const title = museum.value?.title || 'AI博物馆';
-  if (navigator.share) {
-    try {
-      await navigator.share({ title, url });
-    }
-    catch {}
-  }
-  else {
-    try {
-      await navigator.clipboard.writeText(url);
-      ElMessage.success('链接已复制');
-    }
-    catch {
-      ElMessage.error('复制失败');
-    }
-  }
+// ==================== 分享（底部抽屉，见 ShareSheet 组件） ====================
+const shareVisible = ref(false);
+
+function onShare() {
+  shareVisible.value = true;
 }
 
 // ==================== 与AI馆员通话 ====================
@@ -127,6 +113,9 @@ let horizontal: boolean | null = null;
 
 function onPointerDown(e: PointerEvent) {
   if (apps.value.length < 2)
+    return;
+  // 按在按钮/圆圈等交互元素上时不启动滑动捕获，否则setPointerCapture会劫持click导致按钮无法点击
+  if ((e.target as HTMLElement | null)?.closest('button, .app-circles'))
     return;
   dragging.value = true;
   horizontal = null;
@@ -283,6 +272,9 @@ function onPointerUp() {
         </div>
       </template>
     </div>
+
+    <!-- 分享抽屉（独立组件） -->
+    <ShareSheet v-model="shareVisible" />
   </div>
 </template>
 
