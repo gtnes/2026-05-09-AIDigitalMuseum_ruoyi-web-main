@@ -7,6 +7,9 @@ import { emailCode, login, register } from '@/api';
 import logoPng from '@/assets/images/logo.png';
 import { useUserStore } from '@/stores';
 
+// 是否允许用户主动关闭（点遮罩/关闭按钮）；false 时只能通过登录成功关闭
+const props = withDefaults(defineProps<{ closable?: boolean }>(), { closable: true });
+
 // 弹层显示状态（与 userStore.isLoginDialogVisible 双向绑定，供守卫远程唤起）
 const visible = defineModel<boolean>('visible', { required: true });
 
@@ -42,7 +45,10 @@ watch(visible, (newVal) => {
   }
 });
 
-function close() {
+// force=true 用于登录成功后的强制关闭，不受 closable 限制
+function close(force = false) {
+  if (!props.closable && !force)
+    return;
   visible.value = false;
 }
 
@@ -74,7 +80,7 @@ async function handleLogin() {
     userStore.resetAuthExpiredHandling();
     ElMessage.success('登录成功');
     // 关闭弹层并留在当前页面（由各页面自行监听 token 完成数据初始化）
-    close();
+    close(true);
   }
   catch (error) {
     console.error('请求错误:', error);
@@ -178,13 +184,14 @@ async function handleRegister() {
 <template>
   <!-- 手机端登录弹层：居中显示，支持登录/注册切换 -->
   <Transition name="mls">
-    <div v-if="visible" class="mls-mask" @click.self="close">
+    <!-- 注意必须写 close() 而不是 close：否则 MouseEvent 会被当作 force 参数绕过 closable 守卫 -->
+    <div v-if="visible" class="mls-mask" @click.self="close()">
       <div class="mls-dialog">
         <!-- 顶部标题栏 -->
         <div class="mls-header">
           <img :src="logoPng" class="mls-logo" alt="logo">
-          <span class="mls-app">RuoYi-AI</span>
-          <button class="mls-close" type="button" aria-label="关闭" @click="close">
+          <span class="mls-app">YunShan-AI</span>
+          <button v-if="closable" class="mls-close" type="button" aria-label="关闭" @click="close()">
             ✕
           </button>
         </div>
