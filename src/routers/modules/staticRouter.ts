@@ -49,6 +49,15 @@ export const staticRouter: RouteRecordRaw[] = [
       icon: 'ChatDotRound',
     },
   },
+  {
+    path: '/museum',
+    name: 'museum',
+    component: () => import('@/pages/museum/index.vue'),
+    meta: {
+      title: 'AI数字博物馆',
+      icon: 'Place',
+    },
+  },
 ];
 
 export const errorRouter = [
