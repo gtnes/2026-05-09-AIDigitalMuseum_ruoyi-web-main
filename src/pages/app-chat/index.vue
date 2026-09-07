@@ -2,15 +2,26 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
-import { ChatDotRound } from '@element-plus/icons-vue';
+import { ArrowLeft, ChatDotRound } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { getAppList, sendAppChat } from '@/api/app-chat';
 import { codeXRender } from '@/utils/markdownRenderers';
 
 const route = useRoute();
+const router = useRouter();
+
+// 返回上一个页面（从博物馆页进入时返回博物馆）
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+  }
+  else {
+    router.push('/museum');
+  }
+}
 
 type MessageItem = BubbleProps & {
   key: number;
@@ -331,6 +342,12 @@ function sendMessageByKey(key: number) {
 
 <template>
   <div class="app-chat-page">
+    <!-- 左上角返回按钮 -->
+    <button class="back-btn" aria-label="返回" @click="goBack">
+      <el-icon :size="20">
+        <ArrowLeft />
+      </el-icon>
+    </button>
     <div class="chat-warp">
       <!-- 顶部智能体头像与名称 -->
       <div v-if="currentApp" class="agent-header">
@@ -590,6 +607,37 @@ function sendMessageByKey(key: number) {
     }
   }
 }
+// 左上角返回按钮：固定在屏幕左上角，不参与内容布局
+.back-btn {
+  position: absolute;
+  top: 14px;
+  left: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: #4e4e52;
+  cursor: pointer;
+  background: rgb(255 255 255 / 85%);
+  border: 1px solid rgb(0 0 0 / 8%);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px 0 rgb(0 0 0 / 8%);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: var(--theme-primary);
+      background: #ffffff;
+    }
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+}
+
 // 顶部智能体头像与名称
 .agent-header {
   display: flex;
