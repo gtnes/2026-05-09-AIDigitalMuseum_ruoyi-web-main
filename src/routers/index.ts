@@ -50,6 +50,13 @@ router.beforeEach(
     //   return next();
     // }
 
+    // 3.5、/apps-chat 需要登录：不跳转页面，放行并弹出登录框就地登录。
+    // ensureLogin 会记录当前地址，登录成功后回到 /apps-chat 而不是跳转首页。
+    if (to.path === '/apps-chat' && !userStore.token) {
+      userStore.ensureLogin(to.fullPath);
+      return next();
+    }
+
     // 4、判断访问页面是否在路由白名单地址[静态路由]中，如果存在直接放行。
     if (ROUTER_WHITE_LIST.includes(to.path))
       return next();

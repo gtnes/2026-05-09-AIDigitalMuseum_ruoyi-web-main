@@ -50,6 +50,15 @@ export const staticRouter: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/apps-chat',
+    name: 'appsChat',
+    component: () => import('@/pages/apps-chat/index.vue'),
+    meta: {
+      title: 'AI应用对话',
+      icon: 'ChatLineRound',
+    },
+  },
+  {
     path: '/museum',
     name: 'museum',
     component: () => import('@/pages/museum/index.vue'),
