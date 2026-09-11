@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Link } from '@element-plus/icons-vue';
+
 const props = defineProps<{
   /** VR页面地址 */
   url: string;
@@ -18,9 +20,13 @@ function openExternal() {
       frameborder="0"
       allow="fullscreen; xr-spatial-tracking"
     />
-    <button class="vr-open-btn" @click="openExternal">
-      在新窗口打开
-    </button>
+    <el-tooltip content="在新窗口打开" placement="left">
+      <button class="vr-open-btn" aria-label="在新窗口打开" @click="openExternal">
+        <el-icon class="vr-open-ico" :size="16">
+          <Link />
+        </el-icon>
+      </button>
+    </el-tooltip>
   </div>
 </template>
 
@@ -44,14 +50,22 @@ function openExternal() {
   top: calc(14px + env(safe-area-inset-top));
   right: 14px;
   z-index: 10;
-  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
   background: rgb(28 24 20 / 65%);
   color: #fff;
-  font-size: 13px;
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+}
+
+.vr-open-ico {
+  color: #fff;
 }
 </style>
