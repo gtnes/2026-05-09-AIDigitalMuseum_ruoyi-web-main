@@ -518,9 +518,16 @@ function onPointerUp() {
   bottom: 215px;
   z-index: 20;
   max-width: calc(100% - 32px);
-  padding: 10px 18px;
-  border-radius: 10px;
-  background: rgb(28 24 20 / 72%);
+  padding: 4px 60px;
+  white-space: nowrap;
+  /* 与头像下方标题一致：中间实、两侧渐隐的橙棕背景 */
+  background: linear-gradient(
+    90deg,
+    rgb(98 68 63 / 0%) 0%,
+    rgb(98 68 63 / 100%) 30%,
+    rgb(98 68 63 / 100%) 70%,
+    rgb(98 68 63 / 0%) 100%
+  );
   color: #fff;
   font-size: 16px;
   line-height: 1.5;
