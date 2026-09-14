@@ -56,6 +56,8 @@ export const staticRouter: RouteRecordRaw[] = [
     meta: {
       title: 'AI应用对话',
       icon: 'ChatLineRound',
+      // 登录状态失效（401）时留在本页弹登录框，不跳转到 /chat
+      stayOnAuthExpired: true,
     },
   },
   {

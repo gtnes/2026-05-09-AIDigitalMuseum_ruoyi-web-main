@@ -96,11 +96,18 @@ async function init() {
   // 生成会话ID
   sessionId.value = `apps-chat-${Date.now()}`;
 
-  // 获取应用列表
-  const res = await getAppList();
-  appList.value = res.data || [];
-  if (appList.value.length > 0) {
-    currentApp.value = appList.value[0];
+  // 获取应用列表（需登录；登录失效时401会弹出登录框，重新登录成功后重新初始化）
+  try {
+    const res = await getAppList();
+    appList.value = res.data || [];
+    if (appList.value.length > 0) {
+      currentApp.value = appList.value[0];
+    }
+  }
+  catch {
+    // 请求失败（如登录状态失效）：重置初始化标记，等待重新登录后再拉起
+    inited.value = false;
+    return;
   }
 
   // 建立SSE连接

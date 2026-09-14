@@ -7,7 +7,7 @@ import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRoute, useRouter } from 'vue-router';
-import { getAppList, sendAppChat } from '@/api/app-chat';
+import { getAppInfo, sendAppChat } from '@/api/app-chat';
 import { codeXRender } from '@/utils/markdownRenderers';
 
 const route = useRoute();
@@ -29,8 +29,7 @@ type MessageItem = BubbleProps & {
   class?: string;
 };
 
-// 应用列表
-const appList = ref<AppChatApp[]>([]);
+// 当前应用（按URL中的appId从公开接口获取）
 const currentApp = ref<AppChatApp | null>(null);
 
 // 对话相关
@@ -89,14 +88,18 @@ async function init() {
   // 生成会话ID
   sessionId.value = `app-chat-${Date.now()}`;
 
-  // 获取应用列表并按URL中的appId选中应用
-  const res = await getAppList();
-  appList.value = res.data || [];
-  const app = appList.value.find(a => String(a.id) === String(urlAppId.value));
-  if (app) {
-    currentApp.value = app;
+  // 按URL中的appId获取单个应用信息（公开接口，只返回该应用）
+  try {
+    const res = await getAppInfo(urlAppId.value);
+    if (res.code === 200 && res.data) {
+      currentApp.value = res.data;
+    }
+    else {
+      pageError.value = '系统错误';
+      return;
+    }
   }
-  else {
+  catch {
     pageError.value = '系统错误';
     return;
   }

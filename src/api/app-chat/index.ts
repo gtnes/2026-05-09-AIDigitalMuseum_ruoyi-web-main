@@ -1,4 +1,5 @@
-import type { AppChatSendDTO } from './types';
+import type { AppChatApp, AppChatSendDTO } from './types';
+import { get } from '@/utils/request';
 
 // 公开请求（不带 JWT）
 const publicRequest = {
@@ -10,9 +11,14 @@ const publicRequest = {
   }),
 };
 
-// 获取应用列表（公开，无需登录）
+// 获取应用列表（需登录，自动携带token）
 export function getAppList() {
-  return publicRequest.get('/system/chatapp/appList').then(r => r.json());
+  return get<AppChatApp[]>('/system/chatapp/appList').json();
+}
+
+// 按ID获取应用信息（公开，无需登录）
+export function getAppInfo(appId: string | number) {
+  return publicRequest.get(`/system/chatapp/appInfo/${appId}`).then(r => r.json());
 }
 
 // 发送对话消息（公开，无需登录）
