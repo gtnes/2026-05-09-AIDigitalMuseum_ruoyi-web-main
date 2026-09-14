@@ -962,13 +962,13 @@ function sendMessageByKey(key: number) {
 
     // AI气泡：米色底透明度75%，文字深棕色
     :deep(.el-bubble.el-bubble-start .el-bubble-content-filled) {
-      color: rgb(86, 65, 51);
+      color: rgb(86 65 51);
       background-color: rgb(var(--theme-cream-rgb), 75%) !important;
     }
 
     // XMarkdown容器默认color:#000会盖住气泡继承色，需单独覆盖
     :deep(.el-bubble.el-bubble-start .elx-xmarkdown-container) {
-      color: rgb(86, 65, 51);
+      color: rgb(86 65 51);
     }
 
     // 用户气泡：透明度75%，文字米色
@@ -1315,6 +1315,7 @@ function sendMessageByKey(key: number) {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-top: 5px;
   margin-bottom: 8px;
 }
 // 单个功能按钮：胶囊样式，可点击切换
