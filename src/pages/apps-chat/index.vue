@@ -2,9 +2,9 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
-import { ArrowLeft, ChatDotRound, SwitchButton } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, ChatDotRound, Refresh, SwitchButton } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRouter } from 'vue-router';
 import { getAppList, sendAppChat } from '@/api/app-chat';
@@ -27,7 +27,7 @@ function goBack() {
 
 type MessageItem = BubbleProps & {
   key: number;
-  role: 'user' | 'system';
+  role: 'user' | 'system' | 'preset';
   class?: string;
 };
 
@@ -43,6 +43,48 @@ const loading = ref(false);
 const sessionId = ref('');
 const senderRef = ref<InstanceType<typeof Sender> | null>(null);
 const popoverRef = ref<any>(null);
+
+// 预设问题：每次最多显示3个，点击刷新按页轮换显示剩余问题
+const PRESET_PAGE_SIZE = 3;
+const presetPageIndex = ref(0);
+const presetExpanded = ref(false);
+const presetRefreshing = ref(false);
+const presetQuestions = computed(() => currentApp.value?.presetQuestions || []);
+const presetPageCount = computed(() => Math.ceil(presetQuestions.value.length / PRESET_PAGE_SIZE));
+const visiblePresetQuestions = computed(() => {
+  const list = presetQuestions.value;
+  // 展开时显示全部问题
+  if (presetExpanded.value)
+    return list;
+  if (list.length <= PRESET_PAGE_SIZE)
+    return list;
+  const start = presetPageIndex.value * PRESET_PAGE_SIZE;
+  return list.slice(start, start + PRESET_PAGE_SIZE);
+});
+
+// 刷新预设问题：翻到下一页（循环轮换）
+function refreshPresetQuestions() {
+  if (presetPageCount.value <= 1)
+    return;
+  presetPageIndex.value = (presetPageIndex.value + 1) % presetPageCount.value;
+  // 播放一次旋转动画
+  presetRefreshing.value = false;
+  requestAnimationFrame(() => {
+    presetRefreshing.value = true;
+  });
+}
+
+// 展开 / 收起全部预设问题
+function togglePresetExpand() {
+  presetExpanded.value = !presetExpanded.value;
+}
+
+// 点击预设问题直接发送
+function askPresetQuestion(question: string) {
+  if (loading.value || !question)
+    return;
+  startSSE(question);
+}
 
 // 输入框上方功能按钮
 const featureOptions = [
@@ -66,11 +108,50 @@ const copyIconMap = ref<Record<number, string>>({});
 const editingMessageKeys = ref<number[]>([]);
 const editedContents = ref<Record<number, string>>({});
 
-// 头像加载失败时清空 appShow，回退到默认图标
+// 头像加载失败标记，回退到默认图标
 const avatarErrorKeys = ref<Set<number>>(new Set());
+
+// AI默认头像：内置SVG图标（浅棕底 + 主题色对话图标），不依赖外链地址
+const DEFAULT_AVATAR
+  = `data:image/svg+xml,${
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+      + '<rect width="1024" height="1024" fill="#F0E4DA"/>'
+      + '<g transform="translate(512 512) scale(0.62) translate(-512 -512)" fill="#A0704D">'
+      + '<path d="m174.72 855.68 135.296-45.12 23.68 11.84C388.096 849.536 448.576 864 512 864c211.84 0 384-166.784 384-352S723.84 160 512 160 128 326.784 128 512c0 69.12 24.96 139.264 70.848 199.232l22.08 28.8-46.272 115.584zm-45.248 82.56A32 32 0 0 1 89.6 896l58.368-145.92C94.72 680.32 64 596.864 64 512 64 299.904 256 96 512 96s448 203.904 448 416-192 416-448 416a461.056 461.056 0 0 1-206.912-48.384l-175.616 58.56z"/>'
+      + '<path d="M512 563.2a51.2 51.2 0 1 1 0-102.4 51.2 51.2 0 0 1 0 102.4m192 0a51.2 51.2 0 1 1 0-102.4 51.2 51.2 0 0 1 0 102.4m-384 0a51.2 51.2 0 1 1 0-102.4 51.2 51.2 0 0 1 0 102.4"/>'
+      + '</g></svg>',
+    )}`;
+
+// 用户默认头像：内置SVG人形图标，与AI默认头像同风格
+const DEFAULT_USER_AVATAR
+  = `data:image/svg+xml,${
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+      + '<rect width="1024" height="1024" fill="#F0E4DA"/>'
+      + '<g transform="translate(512 512) scale(0.62) translate(-512 -512)" fill="#A0704D">'
+      + '<path d="M288 320a224 224 0 1 0 448 0 224 224 0 1 0-448 0m544 608H160a32 32 0 0 1-32-32v-96a160 160 0 0 1 160-160h448a160 160 0 0 1 160 160v96a32 32 0 0 1-32 32z"/>'
+      + '</g></svg>',
+    )}`;
+
+// AI消息气泡头像：优先使用应用配置的appShow图片，未配置或加载失败时回退默认头像
+const aiAvatar = computed(() => {
+  const app = currentApp.value;
+  if (app?.appShow && !avatarErrorKeys.value.has(app.id))
+    return app.appShow;
+  return DEFAULT_AVATAR;
+});
+
 function onAvatarError() {
-  if (currentApp.value)
-    avatarErrorKeys.value.add(currentApp.value.id);
+  if (!currentApp.value)
+    return;
+  avatarErrorKeys.value.add(currentApp.value.id);
+  // 已入列的AI气泡头像同步回退为默认头像
+  bubbleItems.value = bubbleItems.value.map(item =>
+    item.role === 'system' && item.avatar !== DEFAULT_AVATAR
+      ? { ...item, avatar: DEFAULT_AVATAR }
+      : item,
+  );
 }
 
 // SSE
@@ -102,6 +183,8 @@ async function init() {
     appList.value = res.data || [];
     if (appList.value.length > 0) {
       currentApp.value = appList.value[0];
+      // 添加预设问题模块与欢迎语
+      addAppIntroMessages();
     }
   }
   catch {
@@ -225,19 +308,42 @@ function closeSSE() {
   }
 }
 
-// 添加消息
-function addMessage(message: string, isUser: boolean) {
+// 添加预设问题模块（对话流第一条，无头像、无气泡背景，随消息一起滚动）
+function addPresetItem() {
+  bubbleItems.value.push({
+    key: bubbleItems.value.length,
+    role: 'preset',
+    placement: 'start',
+    noStyle: true,
+    maxWidth: '100%',
+    loading: false,
+    content: '',
+  });
+}
+
+// 添加当前应用的预设问题模块与欢迎语（初始化或切换应用时调用）
+function addAppIntroMessages() {
+  // 切换应用后预设问题分页/展开状态重置
+  presetPageIndex.value = 0;
+  presetExpanded.value = false;
+  if (presetQuestions.value.length)
+    addPresetItem();
+  // 欢迎语作为第一条AI消息，展示在预设问题模块下方
+  if (currentApp.value?.welcomeMsg)
+    addMessage(currentApp.value.welcomeMsg, false, true);
+}
+
+// 添加消息（staticMsg为true时用于欢迎语等静态AI消息，不显示loading态）
+function addMessage(message: string, isUser: boolean, staticMsg = false) {
   const key = bubbleItems.value.length;
   const obj: MessageItem = {
     key,
-    avatar: isUser
-      ? 'https://avatars.githubusercontent.com/u/32251822?s=96&v=4'
-      : 'https://cube.elemecdn.com/0/88/03b0d39583f48206768a7534e55bcpng.png',
+    avatar: isUser ? DEFAULT_USER_AVATAR : aiAvatar.value,
     avatarSize: '32px',
     role: isUser ? 'user' : 'system',
     placement: isUser ? 'end' : 'start',
     isMarkdown: !isUser,
-    loading: !isUser,
+    loading: !isUser && !staticMsg,
     content: message || '',
     noStyle: isUser,
   };
@@ -290,6 +396,8 @@ function selectApp(app: AppChatApp) {
   currentApp.value = app;
   // 清空对话
   bubbleItems.value = [];
+  // 添加新应用的预设问题模块与欢迎语
+  addAppIntroMessages();
   // 重新生成sessionId
   sessionId.value = `apps-chat-${Date.now()}`;
   // 重建SSE连接
@@ -409,15 +517,50 @@ async function handleLogout() {
         max-height="100%"
       >
         <template #content="{ item }">
+          <!-- 预设问题模块：对话流第一条，随消息一起滚动 -->
+          <div v-if="item.role === 'preset'" class="preset-questions">
+            <div class="preset-header">
+              <el-icon :size="18" class="preset-title-icon">
+                <ChatDotRound />
+              </el-icon>
+              <span class="preset-title">你可以试着问我</span>
+              <el-icon
+                v-if="!presetExpanded && presetPageCount > 1"
+                class="preset-refresh"
+                :class="{ spinning: presetRefreshing }"
+                :size="16"
+                @click="refreshPresetQuestions"
+              >
+                <Refresh />
+              </el-icon>
+              <div class="preset-more" @click="togglePresetExpand">
+                <span>{{ presetExpanded ? '收起' : '更多' }}</span>
+                <el-icon :size="12" class="preset-more-arrow" :class="{ expanded: presetExpanded }">
+                  <ArrowRight />
+                </el-icon>
+              </div>
+            </div>
+            <div class="preset-list">
+              <div
+                v-for="question in visiblePresetQuestions"
+                :key="question"
+                class="preset-item"
+                @click="askPresetQuestion(question)"
+              >
+                <span class="preset-dot" />
+                <span class="preset-text">{{ question }}</span>
+              </div>
+            </div>
+          </div>
           <XMarkdown
-            v-if="item.content && item.role === 'system'"
+            v-else-if="item.content && item.role === 'system'"
             :markdown="item.content"
             :code-x-render="codeXRender"
             class="markdown-body"
             :themes="{ light: 'github-light', dark: 'github-dark' }"
             default-theme-mode="dark"
           />
-          <div v-if="item.content && item.role === 'user'" class="userContent">
+          <div v-else-if="item.content && item.role === 'user'" class="userContent">
             <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
               <template v-if="!editingMessageKeys.includes(item.key)">
                 <div class="user-content">
@@ -598,6 +741,99 @@ async function handleLogout() {
       flex: 1;
       min-height: 0;
     }
+    // 预设问题模块：主题棕色标题 + 下划线问题列表（位于对话流中）
+    .preset-questions {
+      padding-top: 4px;
+
+      .preset-header {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+
+      .preset-title-icon,
+      .preset-refresh {
+        color: var(--theme-primary);
+      }
+
+      .preset-refresh {
+        cursor: pointer;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+
+        &.spinning {
+          animation: preset-refresh-spin 0.4s ease;
+        }
+      }
+
+      .preset-title {
+        font-size: 15px;
+        font-weight: normal;
+        color: var(--theme-primary);
+      }
+
+      .preset-more {
+        display: flex;
+        gap: 2px;
+        align-items: center;
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--theme-primary);
+        cursor: pointer;
+        user-select: none;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+
+        .preset-more-arrow {
+          transition: transform 0.2s ease;
+
+          &.expanded {
+            transform: rotate(90deg);
+          }
+        }
+      }
+
+      .preset-list {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 0 4px;
+      }
+
+      .preset-item {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: fit-content;
+        font-size: 14px;
+        color: #8f9095;
+        cursor: pointer;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+
+        .preset-dot {
+          flex-shrink: 0;
+          width: 5px;
+          height: 5px;
+          background: #b4b6bd;
+          border-radius: 50%;
+        }
+
+        .preset-text {
+          text-decoration: underline;
+          text-decoration-color: rgb(0 0 0 / 25%);
+          text-underline-offset: 5px;
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+          &:hover .preset-text {
+            color: var(--theme-primary);
+            text-decoration-color: var(--theme-primary);
+          }
+        }
+      }
+    }
     // 输入框容器
     .sender-wrapper {
       position: relative;
@@ -706,6 +942,17 @@ async function handleLogout() {
   }
 }
 
+// 预设问题刷新图标旋转动画
+@keyframes preset-refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 // 顶部智能体头像与名称
 .agent-header {
   display: flex;
@@ -747,6 +994,11 @@ async function handleLogout() {
   color: #ffffff;
   background: var(--theme-primary);
   border-radius: 12px;
+}
+// 预设问题气泡（无样式、start方向）：内容占满整行，保证"更多/收起"右侧对齐
+:deep(.el-bubble-start.el-bubble-no-style .el-bubble-content) {
+  width: 100% !important;
+  max-width: 100% !important;
 }
 // 用户气泡内容区（组件实际类名，无双下划线）：
 // 始终占满可用宽度，编辑框才能撑满；普通消息由 .user-bubble 自行收缩

@@ -8,6 +8,8 @@ export interface AppChatApp {
   providerCode: string;
   appDescribe?: string;
   appShow?: string;
+  welcomeMsg?: string;
+  presetQuestions?: string[];
 }
 
 /**
