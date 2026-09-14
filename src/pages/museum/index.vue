@@ -100,7 +100,8 @@ function onShare() {
 
 // ==================== 与AI馆员通话 ====================
 function onCall(app: MuseumChatApp) {
-  router.push({ path: '/app-chat', query: { appId: String(app.id) } });
+  // 携带museumId，对话页可通过它获取背景图/形象图等博物馆侧配置
+  router.push({ path: '/app-chat', query: { appId: String(app.id), museumId: museumId.value } });
 }
 
 // ==================== 左右滑动切换 ====================

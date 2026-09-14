@@ -2,12 +2,14 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
-import { ArrowLeft, ArrowRight, ChatDotRound, Refresh } from '@element-plus/icons-vue';
+import type { MuseumChatApp } from '@/api/museum/types';
+import { ArrowLeft, ArrowRight, ChatDotRound, Picture, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRoute, useRouter } from 'vue-router';
 import { getAppInfo, sendAppChat } from '@/api/app-chat';
+import { getMuseumInfo } from '@/api/museum';
 import { codeXRender } from '@/utils/markdownRenderers';
 
 const route = useRoute();
@@ -83,6 +85,61 @@ function askPresetQuestion(question: string) {
 }
 
 const urlAppId = computed(() => route.query.appId as string);
+
+// 从博物馆页进入时携带的museumId，用于获取背景图/形象图
+const urlMuseumId = computed(() => route.query.museumId as string);
+
+// ==================== 背景开关：开启时显示博物馆背景图与AI形象图 ====================
+const bgEnabled = ref(false);
+const bgUrl = ref('');
+const idleImgUrl = ref('');
+const talkingGifUrl = ref('');
+
+// 背景形象图：AI回复中（loading）显示说话gif，平时显示待机图，缺失时回退另一张
+const characterImg = computed(() => {
+  if (loading.value && talkingGifUrl.value)
+    return talkingGifUrl.value;
+  return idleImgUrl.value || talkingGifUrl.value;
+});
+
+// 按museumId获取博物馆数据，提取当前应用的背景图/形象图
+// 每次开启开关都重新获取：OSS签名链接有时效，需保证链接新鲜
+async function loadBgMedia() {
+  try {
+    const res = await getMuseumInfo(urlMuseumId.value);
+    if (res.code === 200 && res.data) {
+      const chatapp = (res.data.chatapps || []).find((a: MuseumChatApp) => String(a.id) === String(urlAppId.value));
+      if (chatapp) {
+        bgUrl.value = chatapp.bgUrl || '';
+        idleImgUrl.value = chatapp.idleImgUrl || '';
+        talkingGifUrl.value = chatapp.talkingGifUrl || '';
+      }
+    }
+  }
+  catch {
+    // 获取失败时静默处理，背景不显示
+  }
+}
+
+// 切换背景开关
+function toggleBg() {
+  bgEnabled.value = !bgEnabled.value;
+  if (bgEnabled.value && urlMuseumId.value)
+    loadBgMedia();
+}
+
+// 背景图加载失败时清空，避免显示裂图
+function onBgImgError() {
+  bgUrl.value = '';
+}
+
+// 形象图加载失败时清空当前显示的那张，回退到另一张
+function onCharacterImgError() {
+  if (loading.value && talkingGifUrl.value)
+    talkingGifUrl.value = '';
+  else
+    idleImgUrl.value = '';
+}
 
 // 输入框上方功能按钮
 const featureOptions = [
@@ -173,12 +230,13 @@ async function init() {
   try {
     const res = await getAppInfo(urlAppId.value);
     if (res.code === 200 && res.data) {
-      currentApp.value = res.data;
+      const app = res.data as AppChatApp;
+      currentApp.value = app;
       // 预设问题模块放在对话流第一条；欢迎语紧随其后
       if (presetQuestions.value.length)
         addPresetItem();
-      if (currentApp.value.welcomeMsg)
-        addMessage(currentApp.value.welcomeMsg, false, true);
+      if (app.welcomeMsg)
+        addMessage(app.welcomeMsg, false, true);
     }
     else {
       pageError.value = '系统错误';
@@ -196,6 +254,11 @@ async function init() {
 
 onMounted(() => {
   init();
+  // 从博物馆页进入（带museumId）时默认开启背景并加载媒体
+  if (urlMuseumId.value) {
+    bgEnabled.value = true;
+    loadBgMedia();
+  }
 });
 
 onUnmounted(() => {
@@ -422,11 +485,43 @@ function sendMessageByKey(key: number) {
 </script>
 
 <template>
-  <div class="app-chat-page">
+  <div class="app-chat-page" :class="{ 'bg-on': bgEnabled }">
+    <!-- 背景层：开启背景开关后显示博物馆背景图与AI形象图（半透明蒙层保证消息可读） -->
+    <div v-if="bgEnabled" class="chat-bg-layer" aria-hidden="true">
+      <img
+        v-if="bgUrl"
+        :src="bgUrl"
+        class="chat-bg"
+        alt=""
+        draggable="false"
+        @error="onBgImgError"
+      >
+      <img
+        v-if="characterImg"
+        :src="characterImg"
+        class="chat-character"
+        alt=""
+        draggable="false"
+        @error="onCharacterImgError"
+      >
+    </div>
     <!-- 左上角返回按钮 -->
     <button class="back-btn" aria-label="返回" @click="goBack">
       <el-icon :size="20">
         <ArrowLeft />
+      </el-icon>
+    </button>
+    <!-- 右上角背景开关：仅从博物馆页进入（带museumId）时显示 -->
+    <button
+      v-if="urlMuseumId"
+      class="bg-toggle-btn"
+      :class="{ 'is-on': bgEnabled }"
+      aria-label="背景开关"
+      title="背景显示开关"
+      @click="toggleBg"
+    >
+      <el-icon :size="14">
+        <Picture />
       </el-icon>
     </button>
     <!-- 参数错误提示：无appId或应用不存在 -->
@@ -616,6 +711,10 @@ function sendMessageByKey(key: number) {
   // 页面主题色变量（棕色系），供下方样式统一引用
   --theme-primary: #a0704d;
   --theme-primary-rgb: 160, 112, 77;
+
+  // 米色基色：背景开启模式下统一使用（标题字体、气泡与模块背景）
+  --theme-cream: #fffaf2;
+  --theme-cream-rgb: 255, 250, 242;
   // 将 Element Plus 主色统一改为主题棕色，覆盖所有组件默认蓝色
   --el-color-primary: var(--theme-primary);
   --el-color-primary-light-3: #b88d6d;
@@ -637,11 +736,50 @@ function sendMessageByKey(key: number) {
     background: linear-gradient(180deg, #fff0db 0%, #ffffff 100%);
     pointer-events: none;
   }
+
+  // 背景层：背景图铺满 + 形象图居中底部，定位在页面最底层
+  .chat-bg-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+
+    // 背景图：铺满全屏（与museum页page-bg一致）
+    .chat-bg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    // 形象图：底部居中（与museum页page-character一致）
+    .chat-character {
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      height: 62%;
+      object-fit: contain;
+      transform: translateX(-50%);
+    }
+
+    // 半透明深色蒙层：压暗背景对消息阅读的干扰
+    &::after {
+      position: absolute;
+      inset: 0;
+      content: '';
+      background: rgb(0 0 0 / 60%);
+    }
+  }
+
   // 聊天内容区域：上下布局，输入框固定在底部
   .chat-warp {
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    box-sizing: border-box;
     width: 100%;
     max-width: 800px;
     height: 100vh;
@@ -789,6 +927,118 @@ function sendMessageByKey(key: number) {
       overflow: visible;
     }
   }
+
+  // 背景开启时的适配样式：白色统一为米色、气泡半透明
+  &.bg-on {
+    // 头像下方标题：浅色（米色）
+    .agent-name {
+      color: var(--theme-cream);
+    }
+
+    // "你可以试着问我"模块：深色半透明背景（标题/更多保持浅色模式的主题棕），问题文字米色系
+    .chat-warp .preset-questions {
+      padding: 12px;
+      background: rgb(45 34 27 / 88%);
+      border-radius: 12px;
+
+      // 问题列表：浅米色文字
+      .preset-item {
+        color: rgb(var(--theme-cream-rgb), 80%);
+        .preset-dot {
+          background: rgb(var(--theme-cream-rgb), 50%);
+        }
+        .preset-text {
+          text-decoration-color: rgb(var(--theme-cream-rgb), 80%);
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+          &:hover .preset-text {
+            color: var(--theme-cream);
+            text-decoration-color: var(--theme-cream);
+          }
+        }
+      }
+    }
+
+    // AI气泡：米色底透明度75%，文字深棕色
+    :deep(.el-bubble.el-bubble-start .el-bubble-content-filled) {
+      color: rgb(86, 65, 51);
+      background-color: rgb(var(--theme-cream-rgb), 75%) !important;
+    }
+
+    // XMarkdown容器默认color:#000会盖住气泡继承色，需单独覆盖
+    :deep(.el-bubble.el-bubble-start .elx-xmarkdown-container) {
+      color: rgb(86, 65, 51);
+    }
+
+    // 用户气泡：透明度75%，文字米色
+    .user-bubble {
+      color: var(--theme-cream);
+      background: rgb(var(--theme-primary-rgb), 75%);
+    }
+
+    // 复制/编辑按钮：无背景色，白色图标
+    .copy-btn {
+      color: var(--theme-cream);
+      background-color: transparent;
+
+      // 悬停时仅显示淡白圆形底
+      &:hover {
+        background-color: rgb(255 255 255 / 20%);
+      }
+    }
+
+    // 功能开关按钮（未激活）：透明背景、白色文字
+    .feature-btn {
+      color: var(--theme-cream);
+      background: transparent;
+
+      // 悬停：米色文字与边框
+      @media (hover: hover) and (pointer: fine) {
+        &:hover {
+          color: var(--theme-cream);
+          border-color: var(--theme-cream);
+        }
+      }
+
+      // 激活态：比浅色模式更亮的棕金色，深底上更醒目
+      &.is-active {
+        color: #e0aa76;
+        background: rgb(var(--theme-primary-rgb) / 15%);
+        border-color: #e0aa76;
+      }
+    }
+
+    // Sender操作按钮（清除/语音/发送）：透明背景、白色图标、半透明白色圆圈
+    :deep(.el-send-button .el-button) {
+      color: var(--theme-cream);
+      background-color: transparent;
+      border-color: rgb(var(--theme-cream-rgb), 45%);
+      &:hover {
+        color: var(--theme-cream);
+        background-color: transparent;
+        border-color: var(--theme-cream);
+      }
+    }
+
+    // 禁用态（输入为空时发送按钮）：图标保持白色，仅圆圈更淡示意不可用
+    :deep(.el-send-button .el-button.is-disabled) {
+      color: var(--theme-cream);
+      background-color: transparent;
+      border-color: rgb(var(--theme-cream-rgb), 25%);
+    }
+
+    // 录音中/回复中的暂停按钮：亮棕金，与激活的功能按钮一致
+    :deep(.el-send-button .loading-svg) {
+      color: #e0aa76;
+    }
+
+    // 输入框文字与光标：米色，深色背景上可读
+    :deep(.chat-sender .el-textarea__inner) {
+      color: var(--theme-cream);
+      caret-color: var(--theme-cream);
+    }
+  }
 }
 // 左上角返回按钮：固定在屏幕左上角，不参与内容布局
 .back-btn {
@@ -818,6 +1068,45 @@ function sendMessageByKey(key: number) {
   }
   &:active {
     transform: scale(0.94);
+  }
+}
+
+// 右上角背景开关：与返回按钮同款圆形样式
+.bg-toggle-btn {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: #4e4e52;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  background: rgb(255 255 255 / 85%);
+  border: 1px solid rgb(0 0 0 / 8%);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px 0 rgb(0 0 0 / 8%);
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: var(--theme-primary);
+      background: #ffffff;
+    }
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+
+  // 开启态：主题棕色高亮
+  &.is-on {
+    color: var(--theme-primary);
+    background: rgb(var(--theme-primary-rgb), 0.12);
+    border-color: rgb(var(--theme-primary-rgb), 0.35);
   }
 }
 
@@ -973,36 +1262,45 @@ function sendMessageByKey(key: number) {
   justify-content: flex-end;
   margin-top: 12px;
 }
+
 // 复制/编辑按钮容器：悬浮在气泡右下角
 .copy-button-container {
   position: absolute;
-  right: -10px;
-  bottom: -28px;
+  right: 0;
+  bottom: -22px;
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
   pointer-events: none;
-  transform: translateY(10px);
   transition: all 0.3s ease;
+
   // 复制/编辑按钮
   .copy-btn {
-    width: 24px;
-    height: 24px;
+    width: 18px;
+    height: 18px;
     padding: 0;
-    font-size: 16px;
+    font-size: 13px;
     color: #91949a;
     pointer-events: auto;
     cursor: pointer;
     border: none !important;
+
     // SVG 图标加粗描边
     :deep(svg) {
       stroke-width: 3 !important;
     }
+
     // 悬停时圆形背景
     &:hover {
       background-color: #f1efef;
       border-radius: 50%;
       transition: background-color 0.2s;
     }
+  }
+
+  // Element Plus 默认兄弟按钮有12px间距，改由容器gap控制
+  .copy-btn + .copy-btn {
+    margin-left: 0;
   }
 }
 // 输入框前缀区域：水平排列
