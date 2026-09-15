@@ -95,9 +95,12 @@ const bgUrl = ref('');
 const idleImgUrl = ref('');
 const talkingGifUrl = ref('');
 
-// 背景形象图：AI回复中（loading）显示说话gif，平时显示待机图，缺失时回退另一张
+// 音频是否正在出声播放（控制形象图说话gif切换）
+const audioPlaying = ref(false);
+
+// 背景形象图：音频出声播放中显示说话gif，暂停/未播放显示待机图，缺失时回退另一张
 const characterImg = computed(() => {
-  if (loading.value && talkingGifUrl.value)
+  if (audioPlaying.value && talkingGifUrl.value)
     return talkingGifUrl.value;
   return idleImgUrl.value || talkingGifUrl.value;
 });
@@ -394,6 +397,7 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
       if (settled)
         return;
       settled = true;
+      audioPlaying.value = false;
       audioDone = null;
       audio = null;
       resolve();
@@ -401,13 +405,18 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
     audioDone = done;
     audio.onended = done;
     audio.onerror = done;
-    audio.play().catch(done);
+    audio.play().then(() => {
+      // play() resolve后再置true，防止已被停止（settled）时误标为播放中
+      if (!settled)
+        audioPlaying.value = true;
+    }).catch(done);
   });
 }
 
 // 停止朗读：会话代号+1使播放链退出，并中断当前音频
 function stopAudio() {
   playSession++;
+  audioPlaying.value = false;
   if (audio) {
     audio.onended = null;
     audio.onerror = null;
