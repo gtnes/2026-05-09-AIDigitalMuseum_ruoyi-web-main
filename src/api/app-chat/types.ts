@@ -33,3 +33,14 @@ export interface AppChatSseData {
   type: AppChatSseType;
   content?: string;
 }
+
+/**
+ * 语音合成结果
+ */
+export interface AppChatTtsResult {
+  format: string;
+  mimeType: string;
+  b64Json: string;
+  dataUrl: string;
+  textLength: number;
+}

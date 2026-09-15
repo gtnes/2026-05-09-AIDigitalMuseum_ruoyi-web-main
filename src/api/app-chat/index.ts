@@ -25,3 +25,8 @@ export function getAppInfo(appId: string | number) {
 export function sendAppChat(data: AppChatSendDTO) {
   return publicRequest.post('/system/chatapp/chat/send', data);
 }
+
+// 语音合成（公开，无需登录）：按音色档案合成（voiceId来自博物馆智能体配置），返回dataUrl可直接播放
+export function synthesizeTts(data: { voiceId: number | string; text: string }) {
+  return publicRequest.post('/voice/tts', data).then(r => r.json());
+}

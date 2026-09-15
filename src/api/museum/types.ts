@@ -15,6 +15,8 @@ export interface MuseumChatApp {
   talkingGifUrl: string;
   /** 说明 */
   description: string;
+  /** AI语音音色档案id（voice_profile.id，空=该智能体不播报语音） */
+  voiceProfileId?: number | string | null;
   /** 职责名称（如"AI馆员"，用于通话按钮文案"与{duty}通话"） */
   duty: string;
   /** 展示排序 */
