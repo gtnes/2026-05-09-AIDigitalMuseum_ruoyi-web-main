@@ -44,3 +44,16 @@ export interface AppChatTtsResult {
   dataUrl: string;
   textLength: number;
 }
+
+/**
+ * AI语音音色档案（启用中）
+ */
+export interface VoiceProfileItem {
+  id: number | string;
+  /** 音色名称（如 西西） */
+  voiceName: string;
+  /** 平台名称（如 阿里云） */
+  platformName?: string;
+  /** 平台音色显示名（如 龙婉） */
+  platformVoiceName?: string;
+}

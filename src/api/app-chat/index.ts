@@ -1,4 +1,4 @@
-import type { AppChatApp, AppChatSendDTO } from './types';
+import type { AppChatApp, AppChatSendDTO, VoiceProfileItem } from './types';
 import { get } from '@/utils/request';
 
 // 公开请求（不带 JWT）
@@ -61,4 +61,9 @@ async function signTtsPayload(text: string) {
 export async function synthesizeTts(data: { voiceId: number | string; text: string }) {
   const payload = await signTtsPayload(data.text);
   return publicRequest.post('/voice/tts', { ...data, ...payload }).then(r => r.json());
+}
+
+// 获取启用中的音色档案列表（需登录，apps-chat测试页音色选择用）
+export function getVoiceList() {
+  return get<VoiceProfileItem[]>('/voice/tts/voices').json();
 }

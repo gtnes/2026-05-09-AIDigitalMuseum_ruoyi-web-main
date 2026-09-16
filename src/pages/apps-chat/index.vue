@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
-import type { AppChatApp } from '@/api/app-chat/types';
-import { ArrowLeft, ArrowRight, ChatDotRound, Refresh, SwitchButton } from '@element-plus/icons-vue';
+import type { AppChatApp, VoiceProfileItem } from '@/api/app-chat/types';
+import { ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Refresh, SwitchButton } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRouter } from 'vue-router';
-import { getAppList, sendAppChat } from '@/api/app-chat';
+import { getAppList, getVoiceList, sendAppChat, synthesizeTts } from '@/api/app-chat';
 import MobileLoginSheet from '@/components/MobileLoginSheet/index.vue';
 import { useUserStore } from '@/stores';
 import { codeXRender } from '@/utils/markdownRenderers';
@@ -103,6 +103,316 @@ function toggleFeature(key: string) {
     activeFeatures.value.push(key);
 }
 
+// ==================== 语音播报（TTS）：测试页音色由下拉选择，分段流式合成，边生成边合成边播放 ====================
+// 语音列表与当前选中音色（测试所有音色用）
+const voiceList = ref<VoiceProfileItem[]>([]);
+const currentVoiceProfileId = ref<number | string | null>(null);
+const voicePopoverRef = ref<any>(null);
+// 自动播报开关（点击气泡喇叭开启/关闭，与app-chat一致）
+const autoPlayVoice = ref(false);
+
+// 语音功能是否可用（已选中音色）
+const voiceEnabled = computed(() => currentVoiceProfileId.value != null);
+
+// 当前选中音色名称（语音选择按钮显示）
+const currentVoiceName = computed(() =>
+  voiceList.value.find(v => String(v.id) === String(currentVoiceProfileId.value))?.voiceName || '');
+
+// 拉取启用中的音色列表并恢复上次选择（无记录时默认第一个）
+async function loadVoiceList() {
+  try {
+    const res = await getVoiceList();
+    if (res.code === 200) {
+      voiceList.value = res.data || [];
+      const saved = localStorage.getItem('apps-chat-voice-id');
+      const found = voiceList.value.find(v => String(v.id) === saved);
+      currentVoiceProfileId.value = found ? found.id : (voiceList.value[0]?.id ?? null);
+    }
+  }
+  catch {
+    // 获取失败静默处理，语音功能不可用
+  }
+}
+
+// 当前朗读中的消息key
+const playingKey = ref<number | null>(null);
+let audio: HTMLAudioElement | null = null;
+// 当前音频播放结束的回调（停止朗读时手动触发，使播放链退出等待）
+let audioDone: (() => void) | null = null;
+// 播放会话代号：每次停止/切换时+1，旧的异步播放链检测到变化自动退出
+let playSession = 0;
+
+// 气泡上的自动播报开关：喇叭=开启自动播报并播放该条；禁止喇叭=关闭自动播报并停止播放
+function toggleBubblePlay(item: MessageItem) {
+  if (autoPlayVoice.value) {
+    autoPlayVoice.value = false;
+    localStorage.setItem('apps-chat-voice-auto', '0');
+    stopAudio();
+    return;
+  }
+  autoPlayVoice.value = true;
+  localStorage.setItem('apps-chat-voice-auto', '1');
+  playMessage(item);
+}
+
+// Markdown转纯文本：去掉代码块/图片/链接/标记符等，仅保留朗读内容
+function stripMarkdown(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ---------- 分段合成引擎 ----------
+// 每条消息的分段状态：texts分段文本 / urls已合成音频 / pending进行中的合成 / consumed已切片字符数
+interface SegmentState {
+  texts: string[];
+  urls: (string | undefined)[];
+  pending: Record<number, Promise<void> | undefined>;
+  consumed: number;
+  finished: boolean;
+  rawText: string;
+}
+// 一段最短长度：避免请求过碎；无句读时的兜底最大长度
+const SEGMENT_MIN_LENGTH = 24;
+const SEGMENT_MAX_LENGTH = 80;
+const SENTENCE_END_RE = /[。！？!?…；;]/;
+const CLAUSE_END_RE = /[，,、：:）)”"\n]/;
+const segmentStore = new Map<number, SegmentState>();
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// 从纯文本中按句读切出完整段（flush=true时把尾部剩余也切出来）
+function cutSegments(st: SegmentState, flush: boolean) {
+  const text = st.rawText;
+  let start = st.consumed;
+  let lastSentence = -1;
+  let lastClause = -1;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (SENTENCE_END_RE.test(ch))
+      lastSentence = i;
+    else if (CLAUSE_END_RE.test(ch))
+      lastClause = i;
+    const len = i - start + 1;
+    if (lastSentence >= start && len >= SEGMENT_MIN_LENGTH) {
+      st.texts.push(text.slice(start, lastSentence + 1));
+      st.urls.push(undefined);
+      start = lastSentence + 1;
+      lastSentence = -1;
+      lastClause = -1;
+    }
+    else if (lastClause >= start && len >= SEGMENT_MAX_LENGTH) {
+      st.texts.push(text.slice(start, lastClause + 1));
+      st.urls.push(undefined);
+      start = lastClause + 1;
+      lastSentence = -1;
+      lastClause = -1;
+    }
+  }
+  if (flush && start < text.length) {
+    st.texts.push(text.slice(start));
+    st.urls.push(undefined);
+    start = text.length;
+  }
+  st.consumed = start;
+}
+
+// 发起单段合成（幂等：已合成/合成中跳过）
+function startSegmentSynth(key: number, index: number) {
+  const st = segmentStore.get(key);
+  if (!st || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
+    return;
+  st.pending[index] = synthesizeTts({ voiceId: currentVoiceProfileId.value, text: st.texts[index] })
+    .then((res) => {
+      delete st.pending[index];
+      if (res.code === 200 && res.data?.dataUrl)
+        st.urls[index] = res.data.dataUrl;
+    })
+    .catch(() => {
+      delete st.pending[index];
+    });
+}
+
+// SSE流式过程中持续喂入文本：增量切块并立即预合成；前缀变化（如代码块闭合）时重置重切
+// autoStart=false时不自动启动播放（供手动播放路径使用，避免与手动播放链叠加成双声）
+function feedSegments(key: number, content: string, autoStart = true) {
+  if (!voiceEnabled.value || !content)
+    return;
+  const text = stripMarkdown(content);
+  if (!text)
+    return;
+  let st = segmentStore.get(key);
+  if (!st) {
+    st = { texts: [], urls: [], pending: {}, consumed: 0, finished: false, rawText: '' };
+    segmentStore.set(key, st);
+  }
+  if (!text.startsWith(st.rawText.slice(0, st.consumed))) {
+    st.texts = [];
+    st.urls = [];
+    st.pending = {};
+    st.consumed = 0;
+    st.finished = false;
+  }
+  st.rawText = text;
+  cutSegments(st, false);
+  // 仅自动播报开启或该消息正在播放中时才预合成（边生成边合成秒出声）；
+  // 自动播报关闭时只切分缓存文本、不发任何合成请求，点喇叭时再批量合成
+  if (autoPlayVoice.value || playingKey.value === key)
+    st.texts.forEach((_, i) => startSegmentSynth(key, i));
+
+  // 自动播报：首段切出即开始播放（不打断手动播放中的其它消息）
+  if (autoStart && autoPlayVoice.value && playingKey.value == null && st.texts.length > 0)
+    startPlayback(key);
+}
+
+// 统一播放入口：先终止一切旧播放会话（会话代号+1使残留异步链失效），
+// 保证任意时刻至多一条播放链、一个音频实例——否则会出现双声/停不掉
+function startPlayback(key: number) {
+  stopAudio();
+  playingKey.value = key;
+  playSegmentsLoop(key, playSession);
+}
+
+// 消息生成结束：收尾切块（尾部不足一段也切出）
+function finishMessageTts(key: number) {
+  const st = segmentStore.get(key);
+  if (st && !st.finished) {
+    st.finished = true;
+    cutSegments(st, true);
+    // 仅自动播报开启或该消息正在播放中时补合成尾部段；关闭自动播报时不发请求
+    // （手动播放路径 playMessage 会自行批量合成，不依赖这里）
+    if (autoPlayVoice.value || playingKey.value === key)
+      st.texts.forEach((_, i) => startSegmentSynth(key, i));
+  }
+}
+
+// 顺序播放各分段音频；下一段未就绪时等它的合成完成（合成早已并行发起），实现边合成边播
+async function playSegmentsLoop(key: number, session: number) {
+  const st = segmentStore.get(key);
+  if (!st)
+    return;
+  for (let i = 0; i < st.texts.length || !st.finished;) {
+    if (session !== playSession)
+      return;
+    if (i >= st.texts.length) {
+      // 内容仍在生成，等待新段切出
+      await sleep(250);
+      continue;
+    }
+    // 预启动下一段合成，保持流水线：当前段播放时下一段已在合成
+    if (i + 1 < st.texts.length)
+      startSegmentSynth(key, i + 1);
+    if (st.pending[i])
+      await st.pending[i];
+    if (session !== playSession)
+      return;
+    const url = st.urls[i];
+    if (url) {
+      await playAudio(key, url);
+      i++;
+    }
+    else {
+      i++; // 该段合成失败，跳过
+    }
+  }
+  if (session === playSession && playingKey.value === key)
+    playingKey.value = null;
+}
+
+// 朗读/停止朗读一条AI消息
+function playMessage(item: MessageItem) {
+  // 正在朗读这条消息：再次点击停止
+  if (playingKey.value === item.key) {
+    stopAudio();
+    return;
+  }
+  if (!currentVoiceProfileId.value) {
+    ElMessage.warning('请先选择语音音色');
+    return;
+  }
+  if (!stripMarkdown(item.content || '')) {
+    ElMessage.warning('没有可朗读的内容');
+    return;
+  }
+  stopAudio();
+  // 准备分段状态并从头播放（已合成段直接复用缓存）；不自动启动，由统一入口接管
+  feedSegments(item.key, item.content || '', false);
+  const st = segmentStore.get(item.key);
+  if (!st)
+    return;
+  st.finished = true;
+  cutSegments(st, true);
+  st.texts.forEach((_, i) => startSegmentSynth(item.key, i));
+  startPlayback(item.key);
+}
+
+// 播放单段音频，播完/出错/被停止时resolve
+function playAudio(key: number, dataUrl: string): Promise<void> {
+  return new Promise((resolve) => {
+    audio = new Audio(dataUrl);
+    playingKey.value = key;
+    let settled = false;
+    const done = () => {
+      if (settled)
+        return;
+      settled = true;
+      audioDone = null;
+      audio = null;
+      resolve();
+    };
+    audioDone = done;
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+  });
+}
+
+// 停止朗读：会话代号+1使播放链退出，并中断当前音频
+function stopAudio() {
+  playSession++;
+  if (audio) {
+    audio.onended = null;
+    audio.onerror = null;
+    audio.pause();
+    audio = null;
+  }
+  audioDone?.();
+  audioDone = null;
+  playingKey.value = null;
+}
+
+// 回复完成后自动播报（自动开关开启且该消息未在播放中时，从头启动播放）
+function autoPlayIfEnabled(key: number) {
+  if (!voiceEnabled.value || !autoPlayVoice.value)
+    return;
+  if (playingKey.value === key)
+    return; // 流式播放已在进行，收尾段会自动接上
+  const st = segmentStore.get(key);
+  if (!st || st.texts.length === 0)
+    return;
+  startPlayback(key);
+}
+
+// 选择音色：停止播放并清空已合成缓存（缓存音频是旧音色合成的）
+function selectVoice(voice: VoiceProfileItem) {
+  currentVoiceProfileId.value = voice.id;
+  localStorage.setItem('apps-chat-voice-id', String(voice.id));
+  stopAudio();
+  segmentStore.clear();
+  voicePopoverRef.value?.hide?.();
+}
+
 // 复制 / 编辑
 const copyIconMap = ref<Record<number, string>>({});
 const editingMessageKeys = ref<number[]>([]);
@@ -193,6 +503,9 @@ async function init() {
     return;
   }
 
+  // 拉取语音列表（失败不影响对话，仅语音功能不可用）
+  loadVoiceList();
+
   // 建立SSE连接
   connectSSE();
 }
@@ -211,6 +524,7 @@ watch(() => userStore.token, (newToken) => {
 
 onUnmounted(() => {
   closeSSE();
+  stopAudio();
 });
 
 // 建立SSE连接
@@ -237,6 +551,8 @@ function connectSSE() {
           bubbleItems.value[lastIndex] = { ...lastMsg, content, loading: false };
           bubbleItems.value = [...bubbleItems.value];
           scrollToBottom();
+          // 边生成边切分合成语音（自动播报开启时首段就绪即开播）
+          feedSegments(lastMsg.key, content);
         }
       }
     }
@@ -258,9 +574,14 @@ function connectSSE() {
     }
   });
 
-  // 监听完成事件（后端 event 名称为 "done"）
+  // 监听完成事件（后端 event 名称为 "done"）：收尾切块合成剩余文本，按需自动播报
   eventSource.addEventListener('done', (_event) => {
     finishLastAssistantMessage();
+    const lastMsg = bubbleItems.value[bubbleItems.value.length - 1];
+    if (lastMsg && lastMsg.role === 'system' && lastMsg.content) {
+      finishMessageTts(lastMsg.key);
+      autoPlayIfEnabled(lastMsg.key);
+    }
   });
 
   // 默认消息处理（兜底）
@@ -275,6 +596,7 @@ function connectSSE() {
           bubbleItems.value[lastIndex] = { ...lastMsg, content, loading: false };
           bubbleItems.value = [...bubbleItems.value];
           scrollToBottom();
+          feedSegments(lastMsg.key, content);
         }
       }
     }
@@ -286,6 +608,10 @@ function connectSSE() {
   eventSource.onerror = (error) => {
     console.error('SSE连接错误:', error);
     finishLastAssistantMessage();
+    // 连接异常中断：收尾已生成的部分文本（不自动播报）
+    const lastMsg = bubbleItems.value[bubbleItems.value.length - 1];
+    if (lastMsg && lastMsg.role === 'system' && lastMsg.content)
+      finishMessageTts(lastMsg.key);
   };
 }
 
@@ -394,6 +720,9 @@ function cancelSSE() {
 // 选择应用
 function selectApp(app: AppChatApp) {
   currentApp.value = app;
+  // 停止朗读并清空语音分段缓存（消息key会重新从0计，避免串音）
+  stopAudio();
+  segmentStore.clear();
   // 清空对话
   bubbleItems.value = [];
   // 添加新应用的预设问题模块与欢迎语
@@ -460,8 +789,10 @@ function sendMessageByKey(key: number) {
 
 // 退出登录：清除凭证后留在当前页（/apps-chat），并弹出登录框等待重新登录
 async function handleLogout() {
-  // 重置页面状态：关闭SSE、清空对话与会话
+  // 重置页面状态：关闭SSE、停止朗读、清空对话与会话
   closeSSE();
+  stopAudio();
+  segmentStore.clear();
   bubbleItems.value = [];
   inputValue.value = '';
   loading.value = false;
@@ -552,14 +883,61 @@ async function handleLogout() {
               </div>
             </div>
           </div>
-          <XMarkdown
-            v-else-if="item.content && item.role === 'system'"
-            :markdown="item.content"
-            :code-x-render="codeXRender"
-            class="markdown-body"
-            :themes="{ light: 'github-light', dark: 'github-dark' }"
-            default-theme-mode="dark"
-          />
+          <div v-else-if="item.role === 'system'" class="system-msg-wrap">
+            <XMarkdown
+              v-if="item.content"
+              :markdown="item.content"
+              :code-x-render="codeXRender"
+              class="markdown-body"
+              :themes="{ light: 'github-light', dark: 'github-dark' }"
+              default-theme-mode="dark"
+            />
+            <!-- 操作按钮：复制 + 朗读（朗读需已选择音色） -->
+            <div v-if="item.content" class="tts-action-row">
+              <button class="tts-btn" @click="copyToClipboard(item.content, item.key)">
+                <el-icon :size="12">
+                  <Check v-if="copyIconMap[item.key] === 'Check'" />
+                  <CopyDocument v-else />
+                </el-icon>
+              </button>
+              <!-- 自绘小喇叭图标（Element Plus无喇叭图标）：允许播报=喇叭+声波，禁止播报=喇叭+斜线 -->
+              <button
+                v-if="voiceEnabled"
+                class="tts-btn"
+                :class="{ 'is-playing': playingKey === item.key }"
+                @click="toggleBubblePlay(item)"
+              >
+                <svg
+                  v-if="autoPlayVoice"
+                  class="tts-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                </svg>
+                <svg
+                  v-else
+                  class="tts-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <line x1="23" y1="9" x2="17" y2="15" />
+                  <line x1="17" y1="9" x2="23" y2="15" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <div v-else-if="item.content && item.role === 'user'" class="userContent">
             <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
               <template v-if="!editingMessageKeys.includes(item.key)">
@@ -606,7 +984,7 @@ async function handleLogout() {
       </BubbleList>
 
       <div class="sender-wrapper">
-        <!-- 功能按钮：输入框外部左上方 -->
+        <!-- 功能按钮：输入框外部左上方；右侧为语音选择按钮 -->
         <div class="feature-buttons">
           <div
             v-for="opt in featureOptions"
@@ -619,6 +997,64 @@ async function handleLogout() {
               <component :is="opt.icon" />
             </el-icon>
             <span>{{ opt.label }}</span>
+          </div>
+
+          <!-- 语音选择：获取所有启用音色，选中的音色用于气泡朗读 -->
+          <div class="voice-select-area">
+            <Popover
+              ref="voicePopoverRef"
+              placement="top-end"
+              :offset="[4, 0]"
+              popover-class="popover-content"
+              :popover-style="popoverStyle"
+              trigger="clickTarget"
+            >
+              <template #trigger>
+                <div
+                  class="feature-btn voice-select-btn"
+                  :class="{ 'is-active': voiceEnabled }"
+                  :title="currentVoiceName || '选择语音'"
+                >
+                  <!-- 自绘小喇叭图标（Element Plus无喇叭图标） -->
+                  <svg
+                    class="voice-select-ico"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </svg>
+                  <span class="voice-select-name">{{ currentVoiceName || '选择语音' }}</span>
+                </div>
+              </template>
+
+              <div class="popover-content-box">
+                <div
+                  v-for="voice in voiceList"
+                  :key="voice.id"
+                  class="popover-content-box-items w-full rounded-8px select-none transition-all transition-duration-300 flex items-center hover:cursor-pointer hover:bg-[rgba(0,0,0,.04)]"
+                >
+                  <div
+                    class="popover-content-box-item p-4px font-size-12px text-overflow line-height-16px"
+                    :class="{ 'is-select': String(currentVoiceProfileId) === String(voice.id) }"
+                    @click="selectVoice(voice)"
+                  >
+                    <div>{{ voice.voiceName }}</div>
+                    <div v-if="voice.platformVoiceName" class="app-sub font-size-11px opacity-60">
+                      {{ voice.platformVoiceName }}
+                    </div>
+                  </div>
+                </div>
+                <div v-if="!voiceList.length" class="voice-empty">
+                  暂无可用语音
+                </div>
+              </div>
+            </Popover>
           </div>
         </div>
 
@@ -1039,36 +1475,44 @@ async function handleLogout() {
   justify-content: flex-end;
   margin-top: 12px;
 }
-// 复制/编辑按钮容器：悬浮在气泡右下角
+// 复制/编辑按钮容器：悬浮在气泡右下角（与app-chat一致）
 .copy-button-container {
   position: absolute;
-  right: -10px;
-  bottom: -28px;
+  right: 0;
+  bottom: -22px;
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
   pointer-events: none;
-  transform: translateY(10px);
   transition: all 0.3s ease;
+
   // 复制/编辑按钮
   .copy-btn {
-    width: 24px;
-    height: 24px;
+    width: 18px;
+    height: 18px;
     padding: 0;
-    font-size: 16px;
+    font-size: 13px;
     color: #91949a;
     pointer-events: auto;
     cursor: pointer;
     border: none !important;
+
     // SVG 图标加粗描边
     :deep(svg) {
       stroke-width: 3 !important;
     }
+
     // 悬停时圆形背景
     &:hover {
       background-color: #f1efef;
       border-radius: 50%;
       transition: background-color 0.2s;
     }
+  }
+
+  // Element Plus 默认兄弟按钮有12px间距，改由容器gap控制
+  .copy-btn + .copy-btn {
+    margin-left: 0;
   }
 }
 // 输入框前缀区域：水平排列
@@ -1078,11 +1522,13 @@ async function handleLogout() {
   align-items: center;
   width: 100%;
 }
-// 功能按钮组：输入框外部左上方
+// 功能按钮组：输入框外部左上方（窄屏放不下时换行）
 .feature-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin-top: 5px;
   margin-bottom: 8px;
 }
 // 单个功能按钮：胶囊样式，可点击切换
@@ -1115,6 +1561,78 @@ async function handleLogout() {
     color: var(--theme-primary);
     background: rgba(var(--theme-primary-rgb), 0.06);
     border-color: var(--theme-primary);
+  }
+}
+// 语音选择区域：推到功能按钮行最右侧
+.voice-select-area {
+  display: flex;
+  margin-left: auto;
+}
+// 语音选择按钮：复用功能按钮胶囊样式，显示当前音色名
+.voice-select-btn {
+  cursor: pointer;
+}
+// 自绘小喇叭svg：与功能按钮图标同尺寸，颜色随按钮
+.voice-select-ico {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+// 音色名称：最多显示 6 个字符，超出省略
+.voice-select-name {
+  max-width: 6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+// 语音列表为空提示
+.voice-empty {
+  padding: 10px 4px;
+  font-size: 12px;
+  color: #a8abb2;
+  text-align: center;
+}
+// AI消息操作按钮行：位于Markdown内容下方（与app-chat一致）
+.tts-action-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+// 操作按钮：圆形图标钮（复制 / 朗读）
+.tts-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: #91949a;
+  user-select: none;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid #e4e7ed;
+  border-radius: 50%;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.2s ease;
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: var(--theme-primary);
+      border-color: var(--theme-primary);
+    }
+  }
+  // 合成中 / 播放中：主题棕色高亮
+  &.is-loading,
+  &.is-playing {
+    color: var(--theme-primary);
+    background: rgba(var(--theme-primary-rgb), 0.06);
+    border-color: var(--theme-primary);
+  }
+  // 自绘小喇叭svg：与el-icon同尺寸，颜色随按钮
+  .tts-ico {
+    display: block;
+    width: 12px;
+    height: 12px;
   }
 }
 // 输入框下方免责声明
