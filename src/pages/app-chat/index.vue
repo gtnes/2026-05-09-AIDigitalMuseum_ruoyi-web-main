@@ -302,7 +302,10 @@ function feedSegments(key: number, content: string, autoStart = true) {
   }
   st.rawText = text;
   cutSegments(st, false);
-  st.texts.forEach((_, i) => startSegmentSynth(key, i));
+  // 仅自动播报开启或该消息正在播放中时才预合成（边生成边合成秒出声）；
+  // 自动播报关闭时只切分缓存文本、不发任何合成请求，点喇叭时再批量合成
+  if (autoPlayVoice.value || playingKey.value === key)
+    st.texts.forEach((_, i) => startSegmentSynth(key, i));
 
   // 自动播报：首段切出即开始播放（不打断手动播放中的其它消息）
   if (autoStart && autoPlayVoice.value && playingKey.value == null && st.texts.length > 0)
@@ -323,7 +326,10 @@ function finishMessageTts(key: number) {
   if (st && !st.finished) {
     st.finished = true;
     cutSegments(st, true);
-    st.texts.forEach((_, i) => startSegmentSynth(key, i));
+    // 仅自动播报开启或该消息正在播放中时补合成尾部段；关闭自动播报时不发请求
+    // （手动播放路径 playMessage 会自行批量合成，不依赖这里）
+    if (autoPlayVoice.value || playingKey.value === key)
+      st.texts.forEach((_, i) => startSegmentSynth(key, i));
   }
 }
 
