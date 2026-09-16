@@ -17,6 +17,10 @@ export interface MuseumChatApp {
   description: string;
   /** AI语音音色档案id（voice_profile.id，空=该智能体不播报语音） */
   voiceProfileId?: number | string | null;
+  /** 语音开关（管理端配置，false时C端不显示播报按钮、不调用语音合成接口） */
+  voiceEnabled?: boolean | null;
+  /** 语音自动播报（管理端配置，C端自动播报的初始状态） */
+  voiceAutoPlay?: boolean | null;
   /** 职责名称（如"AI馆员"，用于通话按钮文案"与{duty}通话"） */
   duty: string;
   /** 展示排序 */

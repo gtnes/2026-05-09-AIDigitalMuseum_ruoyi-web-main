@@ -105,9 +105,13 @@ const characterImg = computed(() => {
   return idleImgUrl.value || talkingGifUrl.value;
 });
 
-// 按museumId获取博物馆数据，提取当前应用的背景图/形象图/AI语音音色
+// 按museumId获取博物馆数据，提取当前应用的背景图/形象图/AI语音配置
 // 当前智能体配置的音色档案id（voiceProfileId，空=该智能体无语音）
 const currentVoiceProfileId = ref<number | string | null>(null);
+// 管理端语音开关（false时整个语音功能对用户隐藏）
+const voiceSwitchOn = ref(false);
+// 自动播报初始状态（来自管理端配置，会话内用户可用气泡喇叭按钮切换）
+const autoPlayVoice = ref(false);
 // 每次开启开关都重新获取：OSS签名链接有时效，需保证链接新鲜
 async function loadBgMedia() {
   try {
@@ -120,6 +124,10 @@ async function loadBgMedia() {
         talkingGifUrl.value = chatapp.talkingGifUrl || '';
         // 智能体固定音色（AI语音管理配置的音色档案），未配置则语音功能不可用
         currentVoiceProfileId.value = chatapp.voiceProfileId ?? null;
+        // 语音开关：旧数据null视为开启；关闭时不显示播报按钮、不发合成请求
+        voiceSwitchOn.value = chatapp.voiceEnabled !== false;
+        // 自动播报初始状态由管理端配置决定（会话内用户可用喇叭按钮切换）
+        autoPlayVoice.value = chatapp.voiceAutoPlay === true;
       }
     }
   }
@@ -166,7 +174,6 @@ function toggleFeature(key: string) {
 }
 
 // ==================== 语音播报（TTS）：分段流式合成，边生成边合成边播放 ====================
-const autoPlayVoice = ref(false);
 // 当前朗读中的消息key
 const playingKey = ref<number | null>(null);
 let audio: HTMLAudioElement | null = null;
@@ -175,8 +182,8 @@ let audioDone: (() => void) | null = null;
 // 播放会话代号：每次停止/切换时+1，旧的异步播放链检测到变化自动退出
 let playSession = 0;
 
-// 语音功能是否可用（当前智能体配置了AI语音）
-const voiceEnabled = computed(() => currentVoiceProfileId.value != null);
+// 语音功能是否可用（管理端语音开关开启 且 当前智能体配置了AI语音）
+const voiceEnabled = computed(() => voiceSwitchOn.value && currentVoiceProfileId.value != null);
 
 // 气泡上的自动播报开关：喇叭=开启自动播报并播放该条；禁止喇叭=关闭自动播报并停止播放
 function toggleBubblePlay(item: MessageItem) {
@@ -542,13 +549,12 @@ async function init() {
 
 onMounted(() => {
   init();
-  // 从博物馆页进入（带museumId）时默认开启背景并加载媒体（同时提取智能体固定音色）
+  // 从博物馆页进入（带museumId）时默认开启背景并加载媒体
+  // （同时提取智能体语音配置：音色/语音开关/自动播报初始状态）
   if (urlMuseumId.value) {
     bgEnabled.value = true;
     loadBgMedia();
   }
-  // 语音播报：恢复自动播报设置（音色来自博物馆智能体配置）
-  autoPlayVoice.value = localStorage.getItem('app-chat-voice-auto') === '1';
 });
 
 onUnmounted(() => {
