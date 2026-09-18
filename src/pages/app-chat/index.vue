@@ -8,7 +8,7 @@ import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRoute, useRouter } from 'vue-router';
-import { getAppInfo, sendAppChat, sendMuseumChat, synthesizeMuseumTts } from '@/api/app-chat';
+import { getAppInfo, sendMuseumChat, synthesizeMuseumTts } from '@/api/app-chat';
 import { getMuseumInfo } from '@/api/museum';
 import { codeXRender } from '@/utils/markdownRenderers';
 
@@ -619,12 +619,12 @@ function connectSSE() {
     }
   });
 
-  // 监听错误事件（后端 event 名称为 "error"）
+  // 监听错误事件（后端 event 名称为 "error"）：C端不弹错误信息框，仅控制台记录并收尾
   eventSource.addEventListener('error', (event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data);
       const errorMsg = data.error || '对话出错';
-      ElMessage.error(errorMsg);
+      console.error('对话出错:', errorMsg);
       finishLastAssistantMessage();
     }
     catch (e) {
@@ -729,6 +729,11 @@ async function startSSE(content: string) {
     ElMessage.warning('请先选择应用');
     return;
   }
+  // 页面必须带museumId（只允许调用博物馆公开接口）；缺失视为无效链接
+  if (!urlMuseumId.value) {
+    ElMessage.warning('参数错误');
+    return;
+  }
   if (loading.value)
     return;
 
@@ -743,20 +748,22 @@ async function startSSE(content: string) {
   scrollToBottom();
 
   try {
-    const payload = {
+    // 只走博物馆公开接口（后端校验服务到期与智能体绑定）
+    const res = await sendMuseumChat({
       appId: currentApp.value.id,
       content,
       sessionId: sessionId.value,
-    };
-    // 带museumId走博物馆公开接口（后端校验服务到期与智能体绑定）；无museumId时回退需登录的通用接口
-    await (urlMuseumId.value
-      ? sendMuseumChat({ ...payload, museumId: urlMuseumId.value })
-      : sendAppChat(payload));
+      museumId: urlMuseumId.value,
+    });
+    // C端不弹错误信息框：接口失败仅控制台记录并复位加载态（SSE不会有内容推送）
+    if (res.code !== 200) {
+      console.error('对话接口返回错误:', res.msg);
+      loading.value = false;
+    }
   }
   catch (error) {
     console.error('发送失败:', error);
     loading.value = false;
-    ElMessage.error('发送失败');
   }
 }
 

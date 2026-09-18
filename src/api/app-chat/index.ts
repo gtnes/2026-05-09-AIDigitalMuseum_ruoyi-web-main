@@ -27,8 +27,9 @@ export function sendAppChat(data: AppChatSendDTO) {
 }
 
 // 博物馆C端发送对话消息（公开接口，需museumId；后端校验服务到期与智能体绑定）
+// 走公开fetch（无全局错误弹框）：失败时返回{code,msg}由页面静默处理
 export function sendMuseumChat(data: MuseumChatSendDTO) {
-  return post('/system/chatapp/chat/museumSend', data).json();
+  return publicRequest.post('/system/chatapp/chat/museumSend', data).then(r => r.json());
 }
 
 // TTS接口签名密钥（防脚本直刷的门槛性校验，非安全级密钥；须与后端 tts.sign-secret 配置一致）
@@ -69,9 +70,10 @@ export async function synthesizeTts(data: { voiceId: number | string; text: stri
 }
 
 // 博物馆C端语音合成（公开接口，需museumId；后端校验服务到期与音色绑定，保留HMAC签名防直刷）
+// 走公开fetch（无全局错误弹框）：失败时返回{code,msg}，页面按"该段合成失败"静默跳过
 export async function synthesizeMuseumTts(data: { museumId: number | string; voiceId: number | string; text: string }) {
   const payload = await signTtsPayload(data.text);
-  return post('/voice/tts/museum', { ...data, ...payload }).json();
+  return publicRequest.post('/voice/tts/museum', { ...data, ...payload }).then(r => r.json());
 }
 
 // 获取启用中的音色档案列表（需登录，apps-chat测试页音色选择用）
