@@ -3,7 +3,7 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
 import type { MuseumChatApp } from '@/api/museum/types';
-import { ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh } from '@element-plus/icons-vue';
+import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
@@ -547,8 +547,30 @@ async function init() {
   connectSSE();
 }
 
+// ==================== 回到底部按钮（自实现） ====================
+// 内置按钮依赖容器尺寸变化的ResizeObserver判断是否有滚动条，移动端内容增长不触发容器
+// 尺寸变化导致 hasVertical 停留 false，按钮偶发不渲染；改为页面自行监听滚动距离
+const BACK_BOTTOM_THRESHOLD = 80;
+const chatAreaRef = ref<HTMLElement | null>(null);
+const showBackBottom = ref(false);
+
+// 滚动离底超过阈值时显示按钮
+function onChatListScroll() {
+  const el = chatAreaRef.value?.querySelector('.el-bubble-list');
+  if (!el)
+    return;
+  showBackBottom.value = el.scrollHeight - (el.scrollTop + el.clientHeight) > BACK_BOTTOM_THRESHOLD;
+}
+
+// 点击回到底部
+function onBackBottom() {
+  scrollToBottom();
+}
+
 onMounted(() => {
   init();
+  // 监听对话列表滚动：控制回到底部按钮显隐
+  chatAreaRef.value?.querySelector('.el-bubble-list')?.addEventListener('scroll', onChatListScroll, { passive: true });
   // 从博物馆页进入（带museumId）时默认开启背景并加载媒体
   // （同时提取智能体语音配置：音色/语音开关/自动播报初始状态）
   if (urlMuseumId.value) {
@@ -560,6 +582,7 @@ onMounted(() => {
 onUnmounted(() => {
   closeSSE();
   stopAudio();
+  chatAreaRef.value?.querySelector('.el-bubble-list')?.removeEventListener('scroll', onChatListScroll);
 });
 
 // 建立SSE连接
@@ -867,147 +890,164 @@ function sendMessageByKey(key: number) {
         </div>
       </div>
 
-      <BubbleList
-        ref="bubbleListRef"
-        class="chat-bubble-list"
-        :list="bubbleItems"
-        max-height="100%"
-      >
-        <template #content="{ item }">
-          <!-- 预设问题模块：对话流第一条，随消息一起滚动 -->
-          <div v-if="item.role === 'preset'" class="preset-questions">
-            <div class="preset-header">
-              <el-icon :size="18" class="preset-title-icon">
-                <ChatDotRound />
-              </el-icon>
-              <span class="preset-title">你可以试着问我</span>
-              <el-icon
-                v-if="!presetExpanded && presetPageCount > 1"
-                class="preset-refresh"
-                :class="{ spinning: presetRefreshing }"
-                :size="16"
-                @click="refreshPresetQuestions"
-              >
-                <Refresh />
-              </el-icon>
-              <div class="preset-more" @click="togglePresetExpand">
-                <span>{{ presetExpanded ? '收起' : '更多' }}</span>
-                <el-icon :size="12" class="preset-more-arrow" :class="{ expanded: presetExpanded }">
-                  <ArrowRight />
+      <div ref="chatAreaRef" class="chat-bubble-area">
+        <BubbleList
+          ref="bubbleListRef"
+          class="chat-bubble-list"
+          :list="bubbleItems"
+          max-height="100%"
+          :show-back-button="false"
+        >
+          <template #content="{ item }">
+            <!-- 预设问题模块：对话流第一条，随消息一起滚动 -->
+            <div v-if="item.role === 'preset'" class="preset-questions">
+              <div class="preset-header">
+                <el-icon :size="18" class="preset-title-icon">
+                  <ChatDotRound />
                 </el-icon>
-              </div>
-            </div>
-            <div class="preset-list">
-              <div
-                v-for="question in visiblePresetQuestions"
-                :key="question"
-                class="preset-item"
-                @click="askPresetQuestion(question)"
-              >
-                <span class="preset-dot" />
-                <span class="preset-text">{{ question }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="item.role === 'system'" class="system-msg-wrap">
-            <XMarkdown
-              v-if="item.content"
-              :markdown="item.content"
-              :code-x-render="codeXRender"
-              class="markdown-body"
-              :themes="{ light: 'github-light', dark: 'github-dark' }"
-              default-theme-mode="dark"
-            />
-            <!-- 操作按钮：复制 + 朗读（朗读需音色可用） -->
-            <div v-if="item.content" class="tts-action-row">
-              <button class="tts-btn" @click="copyToClipboard(item.content, item.key)">
-                <el-icon :size="12">
-                  <Check v-if="copyIconMap[item.key] === 'Check'" />
-                  <CopyDocument v-else />
+                <span class="preset-title">你可以试着问我</span>
+                <el-icon
+                  v-if="!presetExpanded && presetPageCount > 1"
+                  class="preset-refresh"
+                  :class="{ spinning: presetRefreshing }"
+                  :size="16"
+                  @click="refreshPresetQuestions"
+                >
+                  <Refresh />
                 </el-icon>
-              </button>
-              <!-- 自绘小喇叭图标（Element Plus无喇叭图标）：允许播报=喇叭+声波，禁止播报=喇叭+斜线 -->
-              <button
-                v-if="voiceEnabled"
-                class="tts-btn"
-                :class="{ 'is-playing': playingKey === item.key }"
-                @click="toggleBubblePlay(item)"
-              >
-                <svg
-                  v-if="autoPlayVoice"
-                  class="tts-ico"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                </svg>
-                <svg
-                  v-else
-                  class="tts-ico"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <line x1="23" y1="9" x2="17" y2="15" />
-                  <line x1="17" y1="9" x2="23" y2="15" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div v-else-if="item.content && item.role === 'user'" class="userContent">
-            <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
-              <template v-if="!editingMessageKeys.includes(item.key)">
-                <div class="user-content">
-                  {{ item.content }}
+                <div class="preset-more" @click="togglePresetExpand">
+                  <span>{{ presetExpanded ? '收起' : '更多' }}</span>
+                  <el-icon :size="12" class="preset-more-arrow" :class="{ expanded: presetExpanded }">
+                    <ArrowRight />
+                  </el-icon>
                 </div>
-              </template>
-
-              <template v-else>
-                <div class="edit-card">
-                  <el-input
-                    v-model="editedContents[item.key]"
-                    type="textarea"
-                    autosize
-                    class="edit-input"
-                  />
-                  <div class="edit-actions">
-                    <el-button size="small" @click="cancelEditingByKey(item.key)">
-                      取消
-                    </el-button>
-                    <el-button type="primary" size="small" @click="sendMessageByKey(item.key)">
-                      发送
-                    </el-button>
+              </div>
+              <div class="preset-list">
+                <div
+                  v-for="question in visiblePresetQuestions"
+                  :key="question"
+                  class="preset-item"
+                  @click="askPresetQuestion(question)"
+                >
+                  <span class="preset-dot" />
+                  <span class="preset-text">{{ question }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="item.role === 'system'" class="system-msg-wrap">
+              <XMarkdown
+                v-if="item.content"
+                :markdown="item.content"
+                :code-x-render="codeXRender"
+                class="markdown-body"
+                :themes="{ light: 'github-light', dark: 'github-dark' }"
+                default-theme-mode="dark"
+              />
+              <!-- 操作按钮：复制 + 朗读（朗读需音色可用） -->
+              <div v-if="item.content" class="tts-action-row">
+                <button class="tts-btn" @click="copyToClipboard(item.content, item.key)">
+                  <el-icon :size="12">
+                    <Check v-if="copyIconMap[item.key] === 'Check'" />
+                    <CopyDocument v-else />
+                  </el-icon>
+                </button>
+                <!-- 自绘小喇叭图标（Element Plus无喇叭图标）：允许播报=喇叭+声波，禁止播报=喇叭+斜线 -->
+                <button
+                  v-if="voiceEnabled"
+                  class="tts-btn"
+                  :class="{ 'is-playing': playingKey === item.key }"
+                  @click="toggleBubblePlay(item)"
+                >
+                  <svg
+                    v-if="autoPlayVoice"
+                    class="tts-ico"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </svg>
+                  <svg
+                    v-else
+                    class="tts-ico"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="23" y1="9" x2="17" y2="15" />
+                    <line x1="17" y1="9" x2="23" y2="15" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div v-else-if="item.content && item.role === 'user'" class="userContent">
+              <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
+                <template v-if="!editingMessageKeys.includes(item.key)">
+                  <div class="user-content">
+                    {{ item.content }}
                   </div>
-                </div>
-              </template>
-            </div>
+                </template>
 
-            <div v-if="!editingMessageKeys.includes(item.key)" class="copy-button-container">
-              <el-tooltip content="复制" placement="bottom">
-                <el-button
-                  class="copy-btn"
-                  :icon="copyIconMap[item.key] || 'CopyDocument'"
-                  size="small"
-                  @click="copyToClipboard(item.content, item.key)"
-                />
-              </el-tooltip>
-              <el-tooltip content="编辑" placement="bottom">
-                <el-button class="copy-btn" icon="Edit" size="small" @click="startEditing(item)" />
-              </el-tooltip>
+                <template v-else>
+                  <div class="edit-card">
+                    <el-input
+                      v-model="editedContents[item.key]"
+                      type="textarea"
+                      autosize
+                      class="edit-input"
+                    />
+                    <div class="edit-actions">
+                      <el-button size="small" @click="cancelEditingByKey(item.key)">
+                        取消
+                      </el-button>
+                      <el-button type="primary" size="small" @click="sendMessageByKey(item.key)">
+                        发送
+                      </el-button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <div v-if="!editingMessageKeys.includes(item.key)" class="copy-button-container">
+                <el-tooltip content="复制" placement="bottom">
+                  <el-button
+                    class="copy-btn"
+                    :icon="copyIconMap[item.key] || 'CopyDocument'"
+                    size="small"
+                    @click="copyToClipboard(item.content, item.key)"
+                  />
+                </el-tooltip>
+                <el-tooltip content="编辑" placement="bottom">
+                  <el-button class="copy-btn" icon="Edit" size="small" @click="startEditing(item)" />
+                </el-tooltip>
+              </div>
             </div>
-          </div>
-        </template>
-      </BubbleList>
+          </template>
+        </BubbleList>
+
+        <!-- 回到底部：滚动离底超过阈值时显示（自实现，替代内置按钮在移动端偶发不渲染的问题） -->
+        <Transition name="back-bottom-fade">
+          <button
+            v-if="showBackBottom"
+            class="back-bottom-btn"
+            aria-label="回到底部"
+            @click="onBackBottom"
+          >
+            <el-icon :size="24">
+              <ArrowDownBold />
+            </el-icon>
+          </button>
+        </Transition>
+      </div>
 
       <div class="sender-wrapper">
         <!-- 功能按钮：输入框外部左上方 -->
@@ -1141,6 +1181,14 @@ function sendMessageByKey(key: number) {
     height: 100vh;
     padding: 0 10px 10px;
     // 消息列表：占据剩余空间并内部滚动，避免把输入框挤出屏幕
+    .chat-bubble-area {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
     .chat-bubble-list {
       flex: 1;
       min-height: 0;
@@ -1172,7 +1220,7 @@ function sendMessageByKey(key: number) {
       }
 
       .preset-title {
-        font-size: 16px;
+        font-size: 15px;
         font-weight: normal;
         color: var(--theme-primary);
       }
@@ -1806,8 +1854,42 @@ function sendMessageByKey(key: number) {
     background-color: var(--theme-primary) !important;
   }
 }
-// BubbleList 滚动到底部按钮图标改为主题棕色
-:deep(.el-bubble-list-default-back-button .el-bubble-list-back-to-bottom-icon) {
-  color: var(--theme-primary) !important;
+// 回到底部按钮：外观克隆 vue-element-plus-x 内置按钮（白色圆形+主题棕色箭头）
+.back-bottom-btn {
+  position: absolute;
+  bottom: 20px;
+  left: calc(50% - 22px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  user-select: none;
+  cursor: pointer;
+  background-color: #fff;
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 0 4px #00000005, 0 6px 10px #2f35401a;
+  transition: all 0.3s ease;
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px #00000026;
+    }
+  }
+
+  .el-icon {
+    color: var(--theme-primary);
+  }
+}
+// 回到底部按钮淡入淡出
+.back-bottom-fade-enter-active,
+.back-bottom-fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.back-bottom-fade-enter-from,
+.back-bottom-fade-leave-to {
+  opacity: 0;
 }
 </style>
