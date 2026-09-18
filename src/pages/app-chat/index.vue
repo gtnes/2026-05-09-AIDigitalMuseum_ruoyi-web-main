@@ -8,7 +8,7 @@ import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRoute, useRouter } from 'vue-router';
-import { getAppInfo, sendAppChat, synthesizeTts } from '@/api/app-chat';
+import { getAppInfo, sendAppChat, sendMuseumChat, synthesizeMuseumTts } from '@/api/app-chat';
 import { getMuseumInfo } from '@/api/museum';
 import { codeXRender } from '@/utils/markdownRenderers';
 
@@ -276,7 +276,7 @@ function startSegmentSynth(key: number, index: number) {
   const st = segmentStore.get(key);
   if (!st || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
     return;
-  st.pending[index] = synthesizeTts({ voiceId: currentVoiceProfileId.value, text: st.texts[index] })
+  st.pending[index] = synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text: st.texts[index] })
     .then((res) => {
       delete st.pending[index];
       if (res.code === 200 && res.data?.dataUrl)
@@ -743,11 +743,15 @@ async function startSSE(content: string) {
   scrollToBottom();
 
   try {
-    await sendAppChat({
+    const payload = {
       appId: currentApp.value.id,
       content,
       sessionId: sessionId.value,
-    });
+    };
+    // 带museumId走博物馆公开接口（后端校验服务到期与智能体绑定）；无museumId时回退需登录的通用接口
+    await (urlMuseumId.value
+      ? sendMuseumChat({ ...payload, museumId: urlMuseumId.value })
+      : sendAppChat(payload));
   }
   catch (error) {
     console.error('发送失败:', error);

@@ -22,6 +22,13 @@ export interface AppChatSendDTO {
 }
 
 /**
+ * 博物馆C端对话发送请求（公开接口，后端校验服务到期与智能体绑定）
+ */
+export interface MuseumChatSendDTO extends AppChatSendDTO {
+  museumId: number | string;
+}
+
+/**
  * SSE 事件类型
  */
 export type AppChatSseType = 'text' | 'error' | 'done';

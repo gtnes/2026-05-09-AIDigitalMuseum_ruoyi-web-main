@@ -1,4 +1,4 @@
-import type { AppChatApp, AppChatSendDTO, VoiceProfileItem } from './types';
+import type { AppChatApp, AppChatSendDTO, MuseumChatSendDTO, VoiceProfileItem } from './types';
 import { get, post } from '@/utils/request';
 
 // 公开请求（不带 JWT）
@@ -24,6 +24,11 @@ export function getAppInfo(appId: string | number) {
 // 发送对话消息（需登录，自动携带token）
 export function sendAppChat(data: AppChatSendDTO) {
   return post('/system/chatapp/chat/send', data).json();
+}
+
+// 博物馆C端发送对话消息（公开接口，需museumId；后端校验服务到期与智能体绑定）
+export function sendMuseumChat(data: MuseumChatSendDTO) {
+  return post('/system/chatapp/chat/museumSend', data).json();
 }
 
 // TTS接口签名密钥（防脚本直刷的门槛性校验，非安全级密钥；须与后端 tts.sign-secret 配置一致）
@@ -61,6 +66,12 @@ async function signTtsPayload(text: string) {
 export async function synthesizeTts(data: { voiceId: number | string; text: string }) {
   const payload = await signTtsPayload(data.text);
   return post('/voice/tts', { ...data, ...payload }).json();
+}
+
+// 博物馆C端语音合成（公开接口，需museumId；后端校验服务到期与音色绑定，保留HMAC签名防直刷）
+export async function synthesizeMuseumTts(data: { museumId: number | string; voiceId: number | string; text: string }) {
+  const payload = await signTtsPayload(data.text);
+  return post('/voice/tts/museum', { ...data, ...payload }).json();
 }
 
 // 获取启用中的音色档案列表（需登录，apps-chat测试页音色选择用）
