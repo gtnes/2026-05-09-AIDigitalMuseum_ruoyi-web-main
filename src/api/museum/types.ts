@@ -73,4 +73,6 @@ export interface MuseumVideo {
   duration?: number;
   /** 显示顺序 */
   sort?: number;
+  /** 是否置顶（0否 1是），置顶视频列表优先返回 */
+  topFlag?: number;
 }

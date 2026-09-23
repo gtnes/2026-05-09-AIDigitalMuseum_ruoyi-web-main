@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MuseumVideo } from '@/api/museum/types';
 import { Share, VideoPlay } from '@element-plus/icons-vue';
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { getMuseumVideos } from '@/api/museum';
 import ShareSheet from './ShareSheet.vue';
@@ -36,9 +36,76 @@ const filteredVideos = computed(() =>
     : videoList.value.filter(v => v.showCategory === activeCategory.value),
 );
 
+// 置顶视频进入顶部banner轮播，瀑布流只展示非置顶视频
+const topVideos = computed(() => filteredVideos.value.filter(v => v.topFlag === 1));
+const normalVideos = computed(() => filteredVideos.value.filter(v => v.topFlag !== 1));
+
 // 左右双列（按索引奇偶分列）：横向顺序排列，奇数个时最后一个落在左列
-const leftVideos = computed(() => filteredVideos.value.filter((_, i) => i % 2 === 0));
-const rightVideos = computed(() => filteredVideos.value.filter((_, i) => i % 2 === 1));
+const leftVideos = computed(() => normalVideos.value.filter((_, i) => i % 2 === 0));
+const rightVideos = computed(() => normalVideos.value.filter((_, i) => i % 2 === 1));
+
+/* ==================== 置顶banner轮播 ==================== */
+const bannerRef = ref<HTMLElement | null>(null);
+const bannerIndex = ref(0);
+let bannerTimer: ReturnType<typeof setInterval> | undefined;
+
+function onBannerScroll() {
+  const el = bannerRef.value;
+  if (!el)
+    return;
+  requestAnimationFrame(() => {
+    const idx = Math.round(el.scrollLeft / el.clientWidth);
+    if (idx !== bannerIndex.value && idx >= 0 && idx < topVideos.value.length)
+      bannerIndex.value = idx;
+  });
+}
+
+function scrollToBanner(i: number) {
+  const el = bannerRef.value;
+  if (!el)
+    return;
+  bannerIndex.value = i;
+  el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+  restartBannerTimer();
+}
+
+function stopBannerTimer() {
+  if (bannerTimer) {
+    clearInterval(bannerTimer);
+    bannerTimer = undefined;
+  }
+}
+
+function restartBannerTimer() {
+  stopBannerTimer();
+  // 单个置顶无需自动轮播
+  if (topVideos.value.length <= 1)
+    return;
+  bannerTimer = setInterval(() => {
+    scrollToBanner((bannerIndex.value + 1) % topVideos.value.length);
+  }, 5000);
+}
+
+// 列表或筛选变化时：banner归位并重建轮播
+watch(filteredVideos, async () => {
+  bannerIndex.value = 0;
+  await nextTick();
+  bannerRef.value?.scrollTo({ left: 0 });
+  restartBannerTimer();
+});
+
+onBeforeUnmount(() => {
+  stopBannerTimer();
+});
+
+// museum页被KeepAlive缓存期间（进入播放页/对话页）暂停轮播，返回时恢复
+onActivated(() => {
+  restartBannerTimer();
+});
+
+onDeactivated(() => {
+  stopBannerTimer();
+});
 
 onMounted(async () => {
   if (!props.categoryId) {
@@ -99,6 +166,35 @@ function formatDuration(sec?: number) {
 
 <template>
   <div class="video-view">
+    <!-- 置顶视频banner轮播：有置顶才显示 -->
+    <div v-if="topVideos.length > 0" class="video-banner-wrap">
+      <div ref="bannerRef" class="video-banner" @scroll.passive="onBannerScroll">
+        <div
+          v-for="video in topVideos"
+          :key="video.id"
+          class="banner-slide"
+          @click="openVideo(video)"
+        >
+          <img :src="video.coverUrl" :alt="video.title" loading="lazy" draggable="false">
+          <div class="banner-caption">
+            <span v-if="video.showCategory" class="banner-cat">{{ video.showCategory }}</span>
+            <span class="banner-title">{{ video.title }}</span>
+          </div>
+          <span v-if="video.duration" class="banner-duration">{{ formatDuration(video.duration) }}</span>
+        </div>
+      </div>
+      <!-- 切换指示器 -->
+      <div v-if="topVideos.length > 1" class="banner-dots">
+        <span
+          v-for="(video, i) in topVideos"
+          :key="video.id"
+          class="banner-dot"
+          :class="{ active: i === bannerIndex }"
+          @click="scrollToBanner(i)"
+        />
+      </div>
+    </div>
+
     <!-- 标题 + 展示类别切换按钮 -->
     <div class="video-head">
       <h2 class="video-title">
@@ -118,7 +214,7 @@ function formatDuration(sec?: number) {
     </div>
 
     <!-- 瀑布流：左右双列，卡片高度随封面（横版/竖版）自适应 -->
-    <div v-if="filteredVideos.length > 0" class="video-falls">
+    <div v-if="normalVideos.length > 0" class="video-falls">
       <div class="fall-col">
         <div
           v-for="video in leftVideos"
@@ -174,6 +270,9 @@ function formatDuration(sec?: number) {
         </div>
       </div>
     </div>
+    <div v-else-if="loaded && topVideos.length > 0" class="video-no-more">
+      该类别下暂无更多视频
+    </div>
     <div v-else-if="loaded" class="video-empty">
       <el-icon :size="40" class="video-empty-icon">
         <VideoPlay />
@@ -194,6 +293,123 @@ function formatDuration(sec?: number) {
   background: linear-gradient(180deg, #f8f4ec 0%, #f5f0e5 100%);
   padding: 14px 14px 32px;
   box-sizing: border-box;
+}
+
+/* ==================== 置顶视频banner轮播 ==================== */
+.video-banner-wrap {
+  margin: 16px 2px 12px;
+}
+
+.video-banner {
+  display: flex;
+  overflow-x: auto;
+  border-radius: 10px;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.banner-slide {
+  position: relative;
+  flex: 0 0 100%;
+  aspect-ratio: 16 / 9;
+  background: #f4efe6;
+  scroll-snap-align: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+
+  img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    animation: cover-fade-in 0.4s ease both;
+  }
+
+  /* 底部渐变遮罩 + 标题信息 */
+  .banner-caption {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 30px 12px 10px;
+    background: linear-gradient(180deg, transparent 0%, rgb(0 0 0 / 62%) 100%);
+
+    .banner-cat {
+      align-self: flex-start;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgb(255 255 255 / 25%);
+      color: #fff;
+      font-size: 10px;
+      line-height: 1.4;
+      backdrop-filter: blur(2px);
+    }
+
+    .banner-title {
+      overflow: hidden;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    }
+  }
+
+  /* 右下角时长角标 */
+  .banner-duration {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: rgb(0 0 0 / 55%);
+    color: #fff;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+    backdrop-filter: blur(2px);
+  }
+}
+
+/* 切换指示器：当前项胶囊拉伸 */
+.banner-dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  padding-top: 8px;
+
+  .banner-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgb(130 87 65 / 25%);
+    cursor: pointer;
+    transition: all 0.25s ease;
+
+    &.active {
+      width: 16px;
+      background: #825741;
+    }
+  }
+}
+
+/* 仅剩置顶banner、无更多列表视频时的轻提示 */
+.video-no-more {
+  padding-top: 26px;
+  color: #b0a289;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* ==================== 标题 + 类别切换 ==================== */

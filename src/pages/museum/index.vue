@@ -8,6 +8,9 @@ import ShareSheet from './components/ShareSheet.vue';
 import VideoList from './components/VideoList.vue';
 import VirtualSpace from './components/VirtualSpace.vue';
 
+// 组件名供App.vue的KeepAlive include="Museum"匹配：返回时保持列表滚动位置与筛选状态
+defineOptions({ name: 'Museum' });
+
 type TabKey = 'ai' | 'video' | 'vr';
 
 const route = useRoute();
@@ -20,6 +23,24 @@ const museum = ref<MuseumInfo | null>(null);
 
 const activeTab = ref<TabKey>('ai');
 const pageIndex = ref(0);
+
+// ==================== 会话内记住浏览位置：从播放页/对话页返回时恢复 ====================
+const stateKey = computed(() => `museum-state:${museumId.value}`);
+try {
+  const saved = JSON.parse(sessionStorage.getItem(stateKey.value) || '{}');
+  if (saved.tab)
+    activeTab.value = saved.tab;
+  if (typeof saved.index === 'number')
+    pageIndex.value = saved.index;
+}
+catch {}
+
+watch([activeTab, pageIndex], () => {
+  // 离开museum路由期间（如播放页也带id参数）不写入，避免污染缓存状态
+  if (route.path !== '/museum')
+    return;
+  sessionStorage.setItem(stateKey.value, JSON.stringify({ tab: activeTab.value, index: pageIndex.value }));
+});
 
 const apps = computed<MuseumChatApp[]>(() => museum.value?.chatapps || []);
 const currentApp = computed(() => apps.value[pageIndex.value] || null);
@@ -60,13 +81,23 @@ const tabs = computed(() => {
   return list;
 });
 
+// 恢复的tab在当前配置下不可用（如AI视频/VR被关闭）时回退默认
+watch(tabs, (list) => {
+  if (list.length > 0 && !list.some(t => t.key === activeTab.value))
+    activeTab.value = 'ai';
+});
+
+// 恢复的智能体索引超出范围时回退第一个
+watch(apps, (list) => {
+  if (list.length > 0 && pageIndex.value >= list.length)
+    pageIndex.value = 0;
+});
+
 // ==================== 初始化：根据URL中的id加载对应博物馆数据 ====================
 async function loadMuseum() {
   loading.value = true;
   errorMsg.value = '';
   museum.value = null;
-  activeTab.value = 'ai';
-  pageIndex.value = 0;
   if (!museumId.value) {
     errorMsg.value = '缺少博物馆参数';
     loading.value = false;
@@ -89,10 +120,17 @@ async function loadMuseum() {
 
 onMounted(loadMuseum);
 
-// 同一路由下切换不同博物馆id时重新加载
-watch(museumId, (newId, oldId) => {
-  if (newId && newId !== oldId)
-    loadMuseum();
+// 切换不同博物馆id时重新加载并重置浏览位置。
+// 注意：museumId取自全局route.query.id，在播放页（/video-play?id=视频id）期间也会变化，
+// 因此用lastMuseumId记录上次处理过的博物馆id——仅id真正变化时才重置，返回museum不触发。
+let lastMuseumId = museumId.value;
+watch(museumId, (newId) => {
+  if (route.path !== '/museum' || !newId || newId === lastMuseumId)
+    return;
+  lastMuseumId = newId;
+  activeTab.value = 'ai';
+  pageIndex.value = 0;
+  loadMuseum();
 });
 
 // ==================== 分享（底部抽屉，见 ShareSheet 组件） ====================
