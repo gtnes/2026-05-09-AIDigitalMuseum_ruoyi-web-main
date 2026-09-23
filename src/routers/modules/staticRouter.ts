@@ -69,6 +69,15 @@ export const staticRouter: RouteRecordRaw[] = [
       icon: 'Place',
     },
   },
+  {
+    path: '/video-play',
+    name: 'videoPlay',
+    component: () => import('@/pages/video-play/index.vue'),
+    meta: {
+      title: 'AI视频播放',
+      icon: 'VideoPlay',
+    },
+  },
 ];
 
 export const errorRouter = [

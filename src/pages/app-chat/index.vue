@@ -545,6 +545,12 @@ async function init() {
 
   // 建立SSE连接
   connectSSE();
+
+  // 从视频播放页等入口带q参数进入时，自动发送该问题
+  const q = route.query.q as string;
+  if (q) {
+    startSSE(q);
+  }
 }
 
 // ==================== 回到底部按钮（自实现） ====================

@@ -36,9 +36,15 @@ export async function getMuseumInfo(id: string | number) {
 }
 
 /**
- * 获取AI博物馆视频列表（公开，无需登录）
- * TODO: 视频列表接口待后端提供后接入
+ * 获取指定AI视频分类下的视频列表（公开，无需登录，仅启用中的视频）
  */
-export function getMuseumVideos(_id: string | number): Promise<{ code: number; data: MuseumVideo[] }> {
-  return Promise.resolve({ code: 200, data: [] });
+export function getMuseumVideos(categoryId: string | number): Promise<{ code: number; data: MuseumVideo[] }> {
+  return publicRequest.get(`/video/video/front/list/${categoryId}`).then(r => r.json());
+}
+
+/**
+ * 获取视频详情（公开，无需登录，播放页使用）
+ */
+export function getVideoInfo(id: string | number): Promise<{ code: number; data: MuseumVideo | null }> {
+  return publicRequest.get(`/video/video/front/${id}`).then(r => r.json());
 }

@@ -2,6 +2,11 @@
 import { Link } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
+const props = defineProps<{
+  /** 自定义分享链接（如视频播放页）；不传则分享当前页面地址 */
+  url?: string;
+}>();
+
 // 抽屉显示状态（v-model）
 const visible = defineModel<boolean>({ required: true });
 
@@ -9,7 +14,7 @@ const visible = defineModel<boolean>({ required: true });
 const isInWeChat = /MicroMessenger/i.test(navigator.userAgent);
 
 async function copyLink(): Promise<boolean> {
-  const url = window.location.href;
+  const url = props.url || window.location.href;
   try {
     await navigator.clipboard.writeText(url);
     return true;

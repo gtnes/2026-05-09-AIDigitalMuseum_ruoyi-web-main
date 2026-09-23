@@ -58,9 +58,19 @@ export interface MuseumVideo {
   /** 视频id */
   id: number | string;
   /** 视频名称 */
-  name: string;
+  title: string;
   /** 视频封面 URL */
   coverUrl: string;
   /** 视频地址 URL */
   videoUrl: string;
+  /** 展示类别（宣传片/文物/历史等） */
+  showCategory?: string;
+  /** 视频介绍 */
+  description?: string;
+  /** 预设问题列表（播放页"你可以试着问我"模块） */
+  presetQuestions?: string[];
+  /** 视频时长（秒） */
+  duration?: number;
+  /** 显示顺序 */
+  sort?: number;
 }

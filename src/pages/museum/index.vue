@@ -252,7 +252,11 @@ function onPointerUp() {
 
         <!-- AI视频视图：video开关关闭时用v-if完全不挂载，避免加载视频列表 -->
         <div v-if="showVideoTab" v-show="activeTab === 'video'" class="tab-view">
-          <VideoList :museum-id="museumId" :logo="museum.logoUrl" />
+          <VideoList
+            :museum-id="museumId"
+            :category-id="museum.videoCategoryId"
+            :chatapp-id="museum.videoChatappId"
+          />
         </div>
 
         <!-- 虚拟空间视图：vr开关关闭时用v-if完全不挂载，避免iframe加载页面 -->
