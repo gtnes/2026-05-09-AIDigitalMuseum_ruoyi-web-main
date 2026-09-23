@@ -46,11 +46,15 @@ const callLabel = computed(() => `与${currentApp.value?.duty?.trim() || 'AI馆�
 const vrUrl = computed(() => (museum.value ? cleanUrl(museum.value.vrUrl || '') : ''));
 const showVrTab = computed(() => !!museum.value && museum.value.vrEnable === 1 && !!vrUrl.value);
 
+// AI视频：videoEnable=1 时才显示
+const showVideoTab = computed(() => !!museum.value && museum.value.videoEnable === 1);
+
 const tabs = computed(() => {
   const list: { key: TabKey; label: string; icon: typeof Avatar }[] = [
     { key: 'ai', label: 'AI馆员', icon: Avatar },
-    { key: 'video', label: 'AI视频', icon: VideoPlay },
   ];
+  if (showVideoTab.value)
+    list.push({ key: 'video', label: 'AI视频', icon: VideoPlay });
   if (showVrTab.value)
     list.push({ key: 'vr', label: '虚拟空间', icon: Compass });
   return list;
@@ -246,13 +250,13 @@ function onPointerUp() {
           </div>
         </div>
 
-        <!-- AI视频视图 -->
-        <div v-show="activeTab === 'video'" class="tab-view">
+        <!-- AI视频视图：video开关关闭时用v-if完全不挂载，避免加载视频列表 -->
+        <div v-if="showVideoTab" v-show="activeTab === 'video'" class="tab-view">
           <VideoList :museum-id="museumId" :logo="museum.logoUrl" />
         </div>
 
-        <!-- 虚拟空间视图 -->
-        <div v-show="activeTab === 'vr'" class="tab-view">
+        <!-- 虚拟空间视图：vr开关关闭时用v-if完全不挂载，避免iframe加载页面 -->
+        <div v-if="showVrTab" v-show="activeTab === 'vr'" class="tab-view">
           <VirtualSpace :url="vrUrl" />
         </div>
 

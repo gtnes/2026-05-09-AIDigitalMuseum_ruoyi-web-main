@@ -44,6 +44,12 @@ export interface MuseumInfo {
   vrEnable: 0 | 1;
   /** VR地址 */
   vrUrl: string;
+  /** 是否开启AI视频（0关闭 1开启） */
+  videoEnable: 0 | 1;
+  /** AI视频分类id（ai_video_category.id，管理端配置） */
+  videoCategoryId?: number | string | null;
+  /** AI视频讲解员（chat_app.id，管理端配置） */
+  videoChatappId?: number | string | null;
   /** 智能体配置列表 */
   chatapps: MuseumChatApp[];
 }
