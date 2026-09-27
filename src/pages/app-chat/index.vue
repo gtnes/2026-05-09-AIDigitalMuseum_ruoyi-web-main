@@ -2,7 +2,7 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
-import type { MuseumChatApp, MuseumVideo } from '@/api/museum/types';
+import type { MuseumChatApp, MuseumInfo, MuseumVideo } from '@/api/museum/types';
 import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
@@ -112,12 +112,39 @@ const currentVoiceProfileId = ref<number | string | null>(null);
 const voiceSwitchOn = ref(false);
 // 自动播报初始状态（来自管理端配置，会话内用户可用气泡喇叭按钮切换）
 const autoPlayVoice = ref(false);
-// 每次开启开关都重新获取：OSS签名链接有时效，需保证链接新鲜
-async function loadBgMedia() {
+// 博物馆信息共享请求：初始化时背景媒体与AI视频模块并发需要同一接口数据，
+// 用"数据缓存 + pending请求去重"保证页面加载只请求一次
+const museumInfoData = ref<MuseumInfo | null>(null);
+let museumInfoPromise: ReturnType<typeof getMuseumInfo> | null = null;
+
+// force=true 强制重新请求：背景开关切换时需刷新OSS签名链接（签名有时效）
+async function loadMuseumInfo(force = false): Promise<MuseumInfo | null> {
+  if (!force && museumInfoData.value)
+    return museumInfoData.value;
+  if (!force && museumInfoPromise)
+    return (await museumInfoPromise).data ?? null;
+  const p = getMuseumInfo(urlMuseumId.value);
+  museumInfoPromise = p;
   try {
-    const res = await getMuseumInfo(urlMuseumId.value);
-    if (res.code === 200 && res.data) {
-      const chatapp = (res.data.chatapps || []).find((a: MuseumChatApp) => String(a.id) === String(urlAppId.value));
+    const res = await p;
+    if (res.code === 200 && res.data)
+      museumInfoData.value = res.data;
+    return res.data ?? null;
+  }
+  catch {
+    return null;
+  }
+  finally {
+    if (museumInfoPromise === p)
+      museumInfoPromise = null;
+  }
+}
+
+async function loadBgMedia(force = false) {
+  try {
+    const museum = await loadMuseumInfo(force);
+    if (museum) {
+      const chatapp = (museum.chatapps || []).find((a: MuseumChatApp) => String(a.id) === String(urlAppId.value));
       if (chatapp) {
         bgUrl.value = chatapp.bgUrl || '';
         idleImgUrl.value = chatapp.idleImgUrl || '';
@@ -136,11 +163,11 @@ async function loadBgMedia() {
   }
 }
 
-// 切换背景开关
+// 切换背景开关：开启时强制重新获取（OSS签名链接有时效，需保证链接新鲜）
 function toggleBg() {
   bgEnabled.value = !bgEnabled.value;
   if (bgEnabled.value && urlMuseumId.value)
-    loadBgMedia();
+    loadBgMedia(true);
 }
 
 // 背景图加载失败时清空，避免显示裂图
@@ -723,36 +750,34 @@ function addPresetItem() {
 const aiVideos = ref<MuseumVideo[]>([]);
 
 // 加载博物馆配置：videoChatappId等于当前appId且开启AI视频时，拉取该分类下的视频列表
+// 博物馆信息复用共享请求，避免与背景媒体加载重复请求同一接口
 async function loadMuseumVideos() {
   if (!urlMuseumId.value || !urlAppId.value)
     return;
   try {
-    const res = await getMuseumInfo(urlMuseumId.value);
-    if (res.code === 200 && res.data) {
-      const museum = res.data;
-      if (museum.videoEnable === 1 && museum.videoCategoryId && String(museum.videoChatappId) === String(urlAppId.value)) {
-        const listRes = await getMuseumVideos(String(museum.videoCategoryId));
-        if (listRes.code === 200 && Array.isArray(listRes.data) && listRes.data.length > 0) {
-          aiVideos.value = listRes.data;
-          // 插入AI视频模块（对话流特殊项，无头像、无气泡背景）：固定插到第一条对话消息之前，
-          // 无论加载完成时用户是否已开始对话，模块始终位于欢迎语下方，不会插到对话消息之后
-          const insertIndex = bubbleItems.value.findIndex(
-            item => item.role === 'user' || (item.role === 'system' && item.loading),
-          );
-          const videoItem: MessageItem = {
-            key: bubbleItems.value.length,
-            role: 'videoModule',
-            placement: 'start',
-            noStyle: true,
-            maxWidth: '100%',
-            loading: false,
-            content: '',
-          };
-          if (insertIndex >= 0)
-            bubbleItems.value.splice(insertIndex, 0, videoItem);
-          else
-            bubbleItems.value.push(videoItem);
-        }
+    const museum = await loadMuseumInfo();
+    if (museum && museum.videoEnable === 1 && museum.videoCategoryId && String(museum.videoChatappId) === String(urlAppId.value)) {
+      const listRes = await getMuseumVideos(String(museum.videoCategoryId));
+      if (listRes.code === 200 && Array.isArray(listRes.data) && listRes.data.length > 0) {
+        aiVideos.value = listRes.data;
+        // 插入AI视频模块（对话流特殊项，无头像、无气泡背景）：固定插到第一条对话消息之前，
+        // 无论加载完成时用户是否已开始对话，模块始终位于欢迎语下方，不会插到对话消息之后
+        const insertIndex = bubbleItems.value.findIndex(
+          item => item.role === 'user' || (item.role === 'system' && item.loading),
+        );
+        const videoItem: MessageItem = {
+          key: bubbleItems.value.length,
+          role: 'videoModule',
+          placement: 'start',
+          noStyle: true,
+          maxWidth: '100%',
+          loading: false,
+          content: '',
+        };
+        if (insertIndex >= 0)
+          bubbleItems.value.splice(insertIndex, 0, videoItem);
+        else
+          bubbleItems.value.push(videoItem);
       }
     }
   }
