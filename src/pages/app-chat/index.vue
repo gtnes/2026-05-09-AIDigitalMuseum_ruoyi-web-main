@@ -2,14 +2,14 @@
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
-import type { MuseumChatApp } from '@/api/museum/types';
-import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh } from '@element-plus/icons-vue';
+import type { MuseumChatApp, MuseumVideo } from '@/api/museum/types';
+import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
 import { useRoute, useRouter } from 'vue-router';
 import { getAppInfo, sendMuseumChat, synthesizeMuseumTts } from '@/api/app-chat';
-import { getMuseumInfo } from '@/api/museum';
+import { getMuseumInfo, getMuseumVideos } from '@/api/museum';
 import { codeXRender } from '@/utils/markdownRenderers';
 
 const route = useRoute();
@@ -27,7 +27,7 @@ function goBack() {
 
 type MessageItem = BubbleProps & {
   key: number;
-  role: 'user' | 'system' | 'preset';
+  role: 'user' | 'system' | 'preset' | 'videoModule';
   class?: string;
 };
 
@@ -532,6 +532,8 @@ async function init() {
         addPresetItem();
       if (app.welcomeMsg)
         addMessage(app.welcomeMsg, false, true);
+      // AI视频模块：当前智能体为博物馆视频讲解员时，加载并显示在欢迎语下方
+      loadMuseumVideos();
     }
     else {
       pageError.value = '系统错误';
@@ -606,19 +608,8 @@ function connectSSE() {
     try {
       const data = JSON.parse(event.data);
       const content = data.content || '';
-      if (content) {
-        // 后端推送的是完整文本，直接替换而不是累加
-        const lastIndex = bubbleItems.value.length - 1;
-        const lastMsg = bubbleItems.value[lastIndex];
-        if (lastMsg && lastMsg.role === 'system') {
-          // 创建新对象引用，确保 BubbleList 能检测到内容变化
-          bubbleItems.value[lastIndex] = { ...lastMsg, content, loading: false };
-          bubbleItems.value = [...bubbleItems.value];
-          scrollToBottom();
-          // 边生成边切分合成语音（自动播报开启时首段就绪即开播）
-          feedSegments(lastMsg.key, content);
-        }
-      }
+      if (content)
+        updatePendingAssistant(content);
     }
     catch (e) {
       console.error('SSE content 事件解析错误:', e);
@@ -626,7 +617,10 @@ function connectSSE() {
   });
 
   // 监听错误事件（后端 event 名称为 "error"）：C端不弹错误信息框，仅控制台记录并收尾
+  // 注意：浏览器原生error事件（连接中断/重连）事件名同为error但无data字段，由onerror统一处理，这里跳过
   eventSource.addEventListener('error', (event: MessageEvent) => {
+    if (!event.data)
+      return;
     try {
       const data = JSON.parse(event.data);
       const errorMsg = data.error || '对话出错';
@@ -641,8 +635,8 @@ function connectSSE() {
   // 监听完成事件（后端 event 名称为 "done"）：收尾切块合成剩余文本，按需自动播报
   eventSource.addEventListener('done', (_event) => {
     finishLastAssistantMessage();
-    const lastMsg = bubbleItems.value[bubbleItems.value.length - 1];
-    if (lastMsg && lastMsg.role === 'system' && lastMsg.content) {
+    const lastMsg = getLastAssistantMessage();
+    if (lastMsg && lastMsg.content) {
       finishMessageTts(lastMsg.key);
       autoPlayIfEnabled(lastMsg.key);
     }
@@ -653,40 +647,54 @@ function connectSSE() {
     try {
       const data = JSON.parse(event.data);
       const content = data.content;
-      if (typeof content === 'string' && content) {
-        const lastIndex = bubbleItems.value.length - 1;
-        const lastMsg = bubbleItems.value[lastIndex];
-        if (lastMsg && lastMsg.role === 'system') {
-          bubbleItems.value[lastIndex] = { ...lastMsg, content, loading: false };
-          bubbleItems.value = [...bubbleItems.value];
-          scrollToBottom();
-          feedSegments(lastMsg.key, content);
-        }
-      }
+      if (typeof content === 'string' && content)
+        updatePendingAssistant(content);
     }
     catch (e) {
       console.error('SSE默认消息解析错误:', e);
     }
   };
+}
 
-  eventSource.onerror = (error) => {
-    console.error('SSE连接错误:', error);
-    finishLastAssistantMessage();
-    // 连接异常中断：收尾已生成的部分文本（不自动播报）
-    const lastMsg = bubbleItems.value[bubbleItems.value.length - 1];
-    if (lastMsg && lastMsg.role === 'system' && lastMsg.content)
-      finishMessageTts(lastMsg.key);
-  };
+// 从后往前找最后一条助手消息（跳过AI视频/预设问题等特殊模块项，避免其抢占"最后一条"位置）
+function getLastAssistantMessage(): MessageItem | undefined {
+  for (let i = bubbleItems.value.length - 1; i >= 0; i--) {
+    if (bubbleItems.value[i].role === 'system')
+      return bubbleItems.value[i];
+  }
+  return undefined;
+}
+
+// 更新待填充的助手消息：后端流式推送的是累计全文，直接替换
+// 从后往前找最后一条助手消息（跳过AI视频/预设问题等特殊模块项，避免其干扰定位）
+function updatePendingAssistant(content: string) {
+  for (let i = bubbleItems.value.length - 1; i >= 0; i--) {
+    const item = bubbleItems.value[i];
+    if (item.role !== 'system')
+      continue;
+    // 无条件替换（与项目原始实现语义一致）：每次推送都是累计全文，替换为最新内容
+    // 创建新对象引用，确保 BubbleList 能检测到内容变化
+    bubbleItems.value[i] = { ...item, content, loading: false };
+    bubbleItems.value = [...bubbleItems.value];
+    scrollToBottom();
+    // 边生成边切分合成语音（自动播报开启时首段就绪即开播）
+    feedSegments(item.key, content);
+    return;
+  }
 }
 
 // 结束当前助手消息的 loading 状态
 function finishLastAssistantMessage() {
   loading.value = false;
-  const lastIndex = bubbleItems.value.length - 1;
-  const lastMsg = bubbleItems.value[lastIndex];
-  if (lastMsg && lastMsg.role === 'system' && lastMsg.loading) {
-    bubbleItems.value[lastIndex] = { ...lastMsg, loading: false };
-    bubbleItems.value = [...bubbleItems.value];
+  for (let i = bubbleItems.value.length - 1; i >= 0; i--) {
+    const item = bubbleItems.value[i];
+    if (item.role !== 'system')
+      continue;
+    if (item.loading) {
+      bubbleItems.value[i] = { ...item, loading: false };
+      bubbleItems.value = [...bubbleItems.value];
+    }
+    return;
   }
 }
 
@@ -709,6 +717,70 @@ function addPresetItem() {
     loading: false,
     content: '',
   });
+}
+
+// ==================== AI视频模块：当前智能体被配置为博物馆AI视频讲解员时，欢迎语下方展示视频列表 ====================
+const aiVideos = ref<MuseumVideo[]>([]);
+
+// 加载博物馆配置：videoChatappId等于当前appId且开启AI视频时，拉取该分类下的视频列表
+async function loadMuseumVideos() {
+  if (!urlMuseumId.value || !urlAppId.value)
+    return;
+  try {
+    const res = await getMuseumInfo(urlMuseumId.value);
+    if (res.code === 200 && res.data) {
+      const museum = res.data;
+      if (museum.videoEnable === 1 && museum.videoCategoryId && String(museum.videoChatappId) === String(urlAppId.value)) {
+        const listRes = await getMuseumVideos(String(museum.videoCategoryId));
+        if (listRes.code === 200 && Array.isArray(listRes.data) && listRes.data.length > 0) {
+          aiVideos.value = listRes.data;
+          // 插入AI视频模块（对话流特殊项，无头像、无气泡背景）：固定插到第一条对话消息之前，
+          // 无论加载完成时用户是否已开始对话，模块始终位于欢迎语下方，不会插到对话消息之后
+          const insertIndex = bubbleItems.value.findIndex(
+            item => item.role === 'user' || (item.role === 'system' && item.loading),
+          );
+          const videoItem: MessageItem = {
+            key: bubbleItems.value.length,
+            role: 'videoModule',
+            placement: 'start',
+            noStyle: true,
+            maxWidth: '100%',
+            loading: false,
+            content: '',
+          };
+          if (insertIndex >= 0)
+            bubbleItems.value.splice(insertIndex, 0, videoItem);
+          else
+            bubbleItems.value.push(videoItem);
+        }
+      }
+    }
+  }
+  catch {
+    // 获取失败时静默处理，不显示AI视频模块
+  }
+}
+
+// 点击AI视频封面进入播放页（带上当前智能体，播放页"与AI讲解员通话"回跳本应用）
+function openAiVideo(v: MuseumVideo) {
+  router.push({
+    path: '/video-play',
+    query: {
+      id: String(v.id),
+      museumId: urlMuseumId.value,
+      chatappId: urlAppId.value,
+    },
+  });
+}
+
+// 时长格式化（秒 → m:ss），无时长配置时不显示
+function formatVideoDuration(seconds: number | string | null | undefined): string {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0)
+    return '';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
 // 添加消息（staticMsg为true时用于欢迎语等静态AI消息，不显示loading态）
@@ -948,6 +1020,27 @@ function sendMessageByKey(key: number) {
                 >
                   <span class="preset-dot" />
                   <span class="preset-text">{{ question }}</span>
+                </div>
+              </div>
+            </div>
+            <!-- AI视频模块：当前智能体为博物馆视频讲解员时，欢迎语下方展示视频封面横滑列表 -->
+            <div v-else-if="item.role === 'videoModule'" class="ai-video-module">
+              <div class="ai-video-header">
+                <span class="ai-video-bar" />
+                <el-icon :size="15" class="ai-video-icon">
+                  <VideoPlay />
+                </el-icon>
+                <span class="ai-video-title">AI视频</span>
+              </div>
+              <div class="ai-video-scroll">
+                <div v-for="v in aiVideos" :key="v.id" class="ai-video-card" @click="openAiVideo(v)">
+                  <div class="ai-video-cover">
+                    <img :src="v.coverUrl" :alt="v.title" loading="lazy">
+                    <span v-if="formatVideoDuration(v.duration)" class="ai-video-duration">{{ formatVideoDuration(v.duration) }}</span>
+                  </div>
+                  <div class="ai-video-name">
+                    {{ v.title }}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1301,6 +1394,108 @@ function sendMessageByKey(key: number) {
             text-decoration-color: var(--theme-primary);
           }
         }
+      }
+    }
+    // AI视频模块（欢迎语下方，视频封面横向滑动列表）：整体圆角卡片，与默认AI气泡背景色一致（含透明度）
+    .ai-video-module {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px 12px 10px;
+      background: rgb(var(--theme-cream-rgb), 75%);
+      border-radius: 12px;
+
+      .ai-video-header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+
+        .ai-video-bar {
+          width: 4px;
+          height: 14px;
+          border-radius: 2px;
+          background: linear-gradient(180deg, #c08a5e, #a0704d);
+        }
+
+        .ai-video-icon {
+          color: #a0704d;
+        }
+
+        .ai-video-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: #3d3a35;
+          letter-spacing: 1px;
+        }
+      }
+
+      .ai-video-scroll {
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+
+        &::-webkit-scrollbar {
+          display: none;
+        }
+      }
+
+      .ai-video-card {
+        flex-shrink: 0;
+        width: 92px;
+        cursor: pointer;
+        scroll-snap-align: start;
+        transition: transform 0.2s ease;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+
+        &:active {
+          transform: scale(0.96);
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+          &:hover {
+            transform: translateY(-2px);
+          }
+        }
+      }
+
+      .ai-video-cover {
+        position: relative;
+        overflow: hidden;
+        aspect-ratio: 3 / 4;
+        border-radius: 10px;
+        background: #3e2f24;
+
+        img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+
+        .ai-video-duration {
+          position: absolute;
+          right: 5px;
+          bottom: 5px;
+          padding: 1px 5px;
+          border-radius: 4px;
+          background: rgb(0 0 0 / 55%);
+          color: #fff;
+          font-size: 10px;
+          font-variant-numeric: tabular-nums;
+        }
+      }
+
+      .ai-video-name {
+        margin-top: 6px;
+        overflow: hidden;
+        font-size: 12px;
+        color: #6b675f;
+        text-align: center;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
     }
     // 输入框容器
