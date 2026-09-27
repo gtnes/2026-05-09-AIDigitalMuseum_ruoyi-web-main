@@ -298,20 +298,56 @@ function cutSegments(st: SegmentState, flush: boolean) {
   st.consumed = start;
 }
 
-// 发起单段合成（幂等：已合成/合成中跳过）
+// TTS合成串行队列 + 失败自动重试：
+// 1) 阿里云语音合成有QPS限制，流式生成时各段立即并发请求会触发429限流；
+//    全局串行（同一时刻至多一个请求在飞）从源头降低请求速率
+// 2) 429/异常时递增退避自动重试，避免某段（尤其首段）合成失败被播放链跳过导致少读内容
+// 3) 重试用尽仍失败才放弃该段
+const SYNTH_MAX_RETRY = 3;
+let synthChain: Promise<void> = Promise.resolve();
+
+function enqueueSynth(st: SegmentState, index: number): Promise<void> {
+  const run = synthChain.then(() => doSynthWithRetry(st, index, 0));
+  // 链上吞掉异常，保证后续排队任务不被中断
+  synthChain = run.catch(() => {});
+  return run;
+}
+
+async function doSynthWithRetry(st: SegmentState, index: number, attempt: number): Promise<void> {
+  if (st.urls[index])
+    return;
+  // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
+  const text = st.texts[index];
+  try {
+    const res = await synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text });
+    if (res.code === 200 && res.data?.dataUrl) {
+      // 写回前校验段未被重切，避免旧结果写到新段位置
+      if (st.texts[index] === text)
+        st.urls[index] = res.data.dataUrl;
+      return;
+    }
+  }
+  catch {
+    // 请求异常同样进入重试
+  }
+  if (attempt < SYNTH_MAX_RETRY) {
+    await sleep(800 * (attempt + 1));
+    return doSynthWithRetry(st, index, attempt + 1);
+  }
+}
+
+// 发起单段合成（幂等：已合成/合成中跳过），进入全局串行队列执行
 function startSegmentSynth(key: number, index: number) {
   const st = segmentStore.get(key);
   if (!st || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
     return;
-  st.pending[index] = synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text: st.texts[index] })
-    .then((res) => {
-      delete st.pending[index];
-      if (res.code === 200 && res.data?.dataUrl)
-        st.urls[index] = res.data.dataUrl;
-    })
-    .catch(() => {
-      delete st.pending[index];
+  const p = enqueueSynth(st, index)
+    .catch(() => {})
+    .finally(() => {
+      if (st.pending[index] === p)
+        delete st.pending[index];
     });
+  st.pending[index] = p;
 }
 
 // SSE流式过程中持续喂入文本：增量切块并立即预合成；前缀变化（如代码块闭合）时重置重切
@@ -393,7 +429,7 @@ async function playSegmentsLoop(key: number, session: number) {
       i++;
     }
     else {
-      i++; // 该段合成失败，跳过
+      i++; // 该段重试后仍失败（重试已在合成队列内完成），跳过
     }
   }
   if (session === playSession && playingKey.value === key)
