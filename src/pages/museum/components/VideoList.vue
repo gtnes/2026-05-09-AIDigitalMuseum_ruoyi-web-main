@@ -125,8 +125,16 @@ onMounted(async () => {
   loaded.value = true;
 });
 
-// 点击封面进入播放页
+// 点击封面进入播放页（同时记录播放上下文：完整列表顺序，供播放页上下滑切换视频）
 function openVideo(video: MuseumVideo) {
+  const orderedList = [...topVideos.value, ...normalVideos.value];
+  try {
+    sessionStorage.setItem('videoPlayContext', JSON.stringify({
+      ids: orderedList.map(v => String(v.id)),
+      index: orderedList.findIndex(v => String(v.id) === String(video.id)),
+    }));
+  }
+  catch {}
   router.push({
     path: '/video-play',
     query: {
