@@ -201,6 +201,9 @@ function toggleFeature(key: string) {
 }
 
 // ==================== 语音播报（TTS）：分段流式合成，边生成边合成边播放 ====================
+// 语音额度熔断（会话级）：收到超限响应后中断未发送的合成请求，防止流式回复持续切段导致连环无效请求与重复弹提示；
+// 不永久锁死——用户点喇叭重新开启语音（toggleBubblePlay开启分支）即重置，可再次尝试发送
+let ttsQuotaBlocked = false;
 // 当前朗读中的消息key
 const playingKey = ref<number | null>(null);
 let audio: HTMLAudioElement | null = null;
@@ -222,6 +225,8 @@ function toggleBubblePlay(item: MessageItem) {
   }
   autoPlayVoice.value = true;
   localStorage.setItem('app-chat-voice-auto', '1');
+  // 重新开启语音：重置额度熔断，允许再次尝试合成（若仍超限会再次中断并提示一次）
+  ttsQuotaBlocked = false;
   playMessage(item);
 }
 
@@ -310,14 +315,10 @@ let synthChain: Promise<void> = Promise.resolve();
 let ttsSession = 0;
 // 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止
 let synthAbort: AbortController | null = null;
-// 日配额熔断：当日已确认语音额度超限后，跳过所有后续合成请求（含停止后新入队的任务），
-// 避免流式回复持续切段导致连环无效请求与重复弹提示；刷新页面或次日自然重置
-let ttsDailyQuotaExceeded = false;
-
-// 日配额超限统一处理：提示只弹一次，随后熔断当日合成并停止朗读流水线
+// 语音额度超限统一处理：同一轮熔断内提示只弹一次，随后中断未发送的合成请求并停止朗读流水线
 function handleTtsQuotaExceeded() {
-  if (!ttsDailyQuotaExceeded) {
-    ttsDailyQuotaExceeded = true;
+  if (!ttsQuotaBlocked) {
+    ttsQuotaBlocked = true;
     ElMessage.warning('语音额度超限，请明日再试');
   }
   stopAudio();
@@ -332,7 +333,7 @@ function enqueueSynth(st: SegmentState, index: number): Promise<void> {
 }
 
 async function doSynthWithRetry(st: SegmentState, index: number, attempt: number, mySession: number): Promise<void> {
-  if (ttsDailyQuotaExceeded || st.urls[index] || mySession !== ttsSession)
+  if (ttsQuotaBlocked || st.urls[index] || mySession !== ttsSession)
     return;
   // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
   const text = st.texts[index];
@@ -373,7 +374,7 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
 // 发起单段合成（幂等：已合成/合成中跳过），进入全局串行队列执行
 function startSegmentSynth(key: number, index: number) {
   const st = segmentStore.get(key);
-  if (!st || ttsDailyQuotaExceeded || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
+  if (!st || ttsQuotaBlocked || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
     return;
   const p = enqueueSynth(st, index)
     .catch(() => {})
