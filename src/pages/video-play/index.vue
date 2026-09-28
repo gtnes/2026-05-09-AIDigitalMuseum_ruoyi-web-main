@@ -286,6 +286,9 @@ onUnmounted(() => {
             webkit-playsinline
             class="player-video"
           />
+          <!-- 透明点击遮罩：盖住视频画面与周边空白，点击冒泡到.player切换播放/暂停；
+               底部让出56px给原生控制条；层级低于返回/分享等UI按钮 -->
+          <div class="tap-mask" />
         </div>
 
         <!-- 左上角返回按钮（与对话页同款） -->
@@ -480,6 +483,15 @@ onUnmounted(() => {
     display: block;
     width: 100%;
     max-height: 100%;
+  }
+
+  /* 透明点击遮罩：解决原生video控件吞掉点击（点视频本体不冒泡）导致无法切换播放/暂停的问题 */
+  .tap-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    bottom: 56px; /* 让出底部原生控制条区域 */
+    background: transparent;
   }
 }
 
