@@ -335,6 +335,13 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
         st.urls[index] = res.data.dataUrl;
       return;
     }
+    // 日配额超限（后端文案"今日语音合成次数已达上限"）：明日才恢复，重试与后续段均无意义
+    // ——停止整个朗读流水线（作废排队任务、中止飞行请求、停止播放）并轻提示用户
+    if (res.code !== 200 && res.msg?.includes('已达上限')) {
+      stopAudio();
+      ElMessage.warning('语音额度超限，请明日再试');
+      return;
+    }
   }
   catch {
     // 被中止或请求异常：语音已停止则直接放弃，不再重试
@@ -932,6 +939,17 @@ async function startSSE(content: string) {
     // C端不弹错误信息框：接口失败仅控制台记录并复位加载态（SSE不会有内容推送）
     if (res.code !== 200) {
       console.error('对话接口返回错误:', res.msg);
+      // 日配额超限（后端文案"今日访问次数已达上限"）：AI气泡直接给出提示文案；
+      // 不走updatePendingAssistant，避免该文案再被切分送去语音合成
+      if (res.msg?.includes('已达上限')) {
+        const last = getLastAssistantMessage();
+        const idx = last ? bubbleItems.value.indexOf(last) : -1;
+        if (idx >= 0 && bubbleItems.value[idx].loading) {
+          bubbleItems.value[idx] = { ...bubbleItems.value[idx], content: '对话额度超限，请明日再试', loading: false };
+          bubbleItems.value = [...bubbleItems.value];
+          scrollToBottom();
+        }
+      }
       loading.value = false;
     }
   }
