@@ -67,6 +67,17 @@ const callLabel = computed(() => `与${currentApp.value?.duty?.trim() || 'AI馆�
 const vrUrl = computed(() => (museum.value ? cleanUrl(museum.value.vrUrl || '') : ''));
 const showVrTab = computed(() => !!museum.value && museum.value.vrEnable === 1 && !!vrUrl.value);
 
+// 虚拟空间/AI视频懒加载：首次切换到对应标签后才挂载组件（避免进页面即加载VR和视频列表）；
+// 访问过一次后保持挂载，切换标签再回来不重新加载；刷新恢复停留在该标签时视为已访问（immediate覆盖）
+const vrVisited = ref(false);
+const videoVisited = ref(false);
+watch(activeTab, (tab) => {
+  if (tab === 'vr')
+    vrVisited.value = true;
+  if (tab === 'video')
+    videoVisited.value = true;
+}, { immediate: true });
+
 // AI视频：videoEnable=1 时才显示
 const showVideoTab = computed(() => !!museum.value && museum.value.videoEnable === 1);
 
@@ -223,12 +234,11 @@ function onPointerUp() {
           <!-- 顶部logo -->
           <img v-if="museum.logoUrl" :src="museum.logoUrl" class="museum-logo" alt="logo">
 
-          <!-- 分享 -->
-          <button class="share-btn" @click="onShare">
+          <!-- 分享：仅图标 -->
+          <button class="share-btn" aria-label="分享" @click="onShare">
             <el-icon :size="20">
               <ShareIcon />
             </el-icon>
-            <span>分享</span>
           </button>
 
           <!-- 应用切换圆圈：平移轨道，激活项始终位于中间（item宽132px，步长132px） -->
@@ -288,8 +298,8 @@ function onPointerUp() {
           </div>
         </div>
 
-        <!-- AI视频视图：video开关关闭时用v-if完全不挂载，避免加载视频列表 -->
-        <div v-if="showVideoTab" v-show="activeTab === 'video'" class="tab-view">
+        <!-- AI视频视图：video开关关闭或未点击过AI视频标签时用v-if不挂载，避免提前加载视频列表 -->
+        <div v-if="showVideoTab && videoVisited" v-show="activeTab === 'video'" class="tab-view">
           <VideoList
             :museum-id="museumId"
             :category-id="museum.videoCategoryId"
@@ -298,7 +308,7 @@ function onPointerUp() {
         </div>
 
         <!-- 虚拟空间视图：vr开关关闭时用v-if完全不挂载，避免iframe加载页面 -->
-        <div v-if="showVrTab" v-show="activeTab === 'vr'" class="tab-view">
+        <div v-if="showVrTab && vrVisited" v-show="activeTab === 'vr'" class="tab-view">
           <VirtualSpace :url="vrUrl" />
         </div>
 
@@ -394,22 +404,20 @@ function onPointerUp() {
   background: rgb(255 255 255 / 85%);
 }
 
+/* 分享按钮：仅图标，padding保证触控区域 */
 .share-btn {
   position: absolute;
   top: calc(14px + env(safe-area-inset-top));
   right: 14px;
   z-index: 30;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 0;
+  justify-content: center;
+  padding: 8px;
   border: none;
   background: none;
   color: #fff;
-  font-size: 13px;
   cursor: pointer;
-  text-shadow: 0 1px 4px rgb(0 0 0 / 45%);
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
