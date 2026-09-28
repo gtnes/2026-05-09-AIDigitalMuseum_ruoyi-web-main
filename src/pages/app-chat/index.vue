@@ -366,6 +366,20 @@ function startSegmentSynth(key: number, index: number) {
   st.pending[index] = p;
 }
 
+// 按播放进度动态合成：只合成播放位置附近的段（当前段+预读窗口），播放推进时再合成后续段。
+// 停止播放后未到达的段不再合成，避免长消息剩余段落全部预合成、中途停止浪费额度；
+// 串行队列下合成一段约1秒、播放一段数秒，预读2段足够无缝衔接
+const SYNTH_LOOKAHEAD = 2;
+
+function synthUpTo(key: number, index: number) {
+  const st = segmentStore.get(key);
+  if (!st)
+    return;
+  const upto = Math.min(index + SYNTH_LOOKAHEAD, st.texts.length - 1);
+  for (let i = index; i <= upto; i++)
+    startSegmentSynth(key, i);
+}
+
 // SSE流式过程中持续喂入文本：增量切块并立即预合成；前缀变化（如代码块闭合）时重置重切
 // autoStart=false时不自动启动播放（供手动播放路径使用，避免与手动播放链叠加成双声）
 function feedSegments(key: number, content: string, autoStart = true) {
@@ -388,12 +402,9 @@ function feedSegments(key: number, content: string, autoStart = true) {
   }
   st.rawText = text;
   cutSegments(st, false);
-  // 仅自动播报开启或该消息正在播放中时才预合成（边生成边合成秒出声）；
-  // 自动播报关闭时只切分缓存文本、不发任何合成请求，点喇叭时再批量合成
-  if (autoPlayVoice.value || playingKey.value === key)
-    st.texts.forEach((_, i) => startSegmentSynth(key, i));
 
-  // 自动播报：首段切出即开始播放（不打断手动播放中的其它消息）
+  // 合成由播放进度动态驱动（见synthUpTo）：自动播报开启时首段切出即开始播放，
+  // 播放链推进时按预读窗口合成；这里不做全量预合成，避免中途停止浪费额度
   if (autoStart && autoPlayVoice.value && playingKey.value == null && st.texts.length > 0)
     startPlayback(key);
 }
@@ -408,19 +419,16 @@ function startPlayback(key: number) {
 }
 
 // 消息生成结束：收尾切块（尾部不足一段也切出）
+// 尾部段合成由播放链按进度驱动，不做全量预合成
 function finishMessageTts(key: number) {
   const st = segmentStore.get(key);
   if (st && !st.finished) {
     st.finished = true;
     cutSegments(st, true);
-    // 仅自动播报开启或该消息正在播放中时补合成尾部段；关闭自动播报时不发请求
-    // （手动播放路径 playMessage 会自行批量合成，不依赖这里）
-    if (autoPlayVoice.value || playingKey.value === key)
-      st.texts.forEach((_, i) => startSegmentSynth(key, i));
   }
 }
 
-// 顺序播放各分段音频；下一段未就绪时等它的合成完成（合成早已并行发起），实现边合成边播
+// 顺序播放各分段音频；按播放进度动态合成（当前段+预读窗口），段未就绪时等合成完成，实现边合成边播
 async function playSegmentsLoop(key: number, session: number) {
   const st = segmentStore.get(key);
   if (!st)
@@ -433,9 +441,8 @@ async function playSegmentsLoop(key: number, session: number) {
       await sleep(250);
       continue;
     }
-    // 预启动下一段合成，保持流水线：当前段播放时下一段已在合成
-    if (i + 1 < st.texts.length)
-      startSegmentSynth(key, i + 1);
+    // 按播放位置入队当前段+预读窗口的合成，保持流水线不过度预合成
+    synthUpTo(key, i);
     if (st.pending[i])
       await st.pending[i];
     if (session !== playSession)
@@ -476,7 +483,8 @@ function playMessage(item: MessageItem) {
     return;
   st.finished = true;
   cutSegments(st, true);
-  st.texts.forEach((_, i) => startSegmentSynth(item.key, i));
+  // 只入队开头预读窗口，后续段由播放链按进度动态合成
+  synthUpTo(item.key, 0);
   startPlayback(item.key);
 }
 
