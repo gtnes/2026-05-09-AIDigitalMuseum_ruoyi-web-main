@@ -303,23 +303,32 @@ function cutSegments(st: SegmentState, flush: boolean) {
 //    全局串行（同一时刻至多一个请求在飞）从源头降低请求速率
 // 2) 429/异常时递增退避自动重试，避免某段（尤其首段）合成失败被播放链跳过导致少读内容
 // 3) 重试用尽仍失败才放弃该段
+// 4) 停止语音（关开关/停朗读/切消息/离开页面）时作废排队任务并中止飞行中请求，避免浪费
 const SYNTH_MAX_RETRY = 3;
 let synthChain: Promise<void> = Promise.resolve();
+// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求
+let ttsSession = 0;
+// 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止
+let synthAbort: AbortController | null = null;
 
 function enqueueSynth(st: SegmentState, index: number): Promise<void> {
-  const run = synthChain.then(() => doSynthWithRetry(st, index, 0));
+  const mySession = ttsSession;
+  const run = synthChain.then(() => doSynthWithRetry(st, index, 0, mySession));
   // 链上吞掉异常，保证后续排队任务不被中断
   synthChain = run.catch(() => {});
   return run;
 }
 
-async function doSynthWithRetry(st: SegmentState, index: number, attempt: number): Promise<void> {
-  if (st.urls[index])
+async function doSynthWithRetry(st: SegmentState, index: number, attempt: number, mySession: number): Promise<void> {
+  if (st.urls[index] || mySession !== ttsSession)
     return;
   // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
   const text = st.texts[index];
   try {
-    const res = await synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text });
+    synthAbort = new AbortController();
+    const res = await synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text }, synthAbort.signal);
+    if (mySession !== ttsSession)
+      return; // 请求期间语音被停止，丢弃结果
     if (res.code === 200 && res.data?.dataUrl) {
       // 写回前校验段未被重切，避免旧结果写到新段位置
       if (st.texts[index] === text)
@@ -328,11 +337,18 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
     }
   }
   catch {
-    // 请求异常同样进入重试
+    // 被中止或请求异常：语音已停止则直接放弃，不再重试
+    if (mySession !== ttsSession)
+      return;
+  }
+  finally {
+    synthAbort = null;
   }
   if (attempt < SYNTH_MAX_RETRY) {
     await sleep(800 * (attempt + 1));
-    return doSynthWithRetry(st, index, attempt + 1);
+    if (mySession !== ttsSession)
+      return; // 重试等待期间语音被停止
+    return doSynthWithRetry(st, index, attempt + 1, mySession);
   }
 }
 
@@ -384,8 +400,9 @@ function feedSegments(key: number, content: string, autoStart = true) {
 
 // 统一播放入口：先终止一切旧播放会话（会话代号+1使残留异步链失效），
 // 保证任意时刻至多一条播放链、一个音频实例——否则会出现双声/停不掉
+// 仅停止播放不动作废合成队列：此刻新消息的合成任务可能已入队
 function startPlayback(key: number) {
-  stopAudio();
+  stopPlaybackOnly();
   playingKey.value = key;
   playSegmentsLoop(key, playSession);
 }
@@ -489,8 +506,9 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
   });
 }
 
-// 停止朗读：会话代号+1使播放链退出，并中断当前音频
-function stopAudio() {
+// 仅停止播放（会话代号+1使播放链退出、中断当前音频），不作废合成队列：
+// 切换播放（startPlayback接管）时用——新消息的合成任务在入队后不能被作废
+function stopPlaybackOnly() {
   playSession++;
   audioPlaying.value = false;
   if (audio) {
@@ -502,6 +520,15 @@ function stopAudio() {
   audioDone?.();
   audioDone = null;
   playingKey.value = null;
+}
+
+// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务、中止飞行中的合成请求
+// （用户关闭语音开关/停止朗读/切换消息/离开页面时调用，避免不再需要的合成浪费）
+function stopAudio() {
+  stopPlaybackOnly();
+  ttsSession++;
+  synthAbort?.abort();
+  synthAbort = null;
 }
 
 // 回复完成后自动播报（自动开关开启且该消息未在播放中时，从头启动播放）

@@ -4,10 +4,11 @@ import { get, post } from '@/utils/request';
 // 公开请求（不带 JWT）
 const publicRequest = {
   get: (url: string) => fetch(`${import.meta.env.VITE_API_URL}${url}`),
-  post: (url: string, data: any) => fetch(`${import.meta.env.VITE_API_URL}${url}`, {
+  post: (url: string, data: any, signal?: AbortSignal) => fetch(`${import.meta.env.VITE_API_URL}${url}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
+    signal,
   }),
 };
 
@@ -71,9 +72,10 @@ export async function synthesizeTts(data: { voiceId: number | string; text: stri
 
 // 博物馆C端语音合成（公开接口，需museumId；后端校验服务到期与音色绑定，保留HMAC签名防直刷）
 // 走公开fetch（无全局错误弹框）：失败时返回{code,msg}，页面按"该段合成失败"静默跳过
-export async function synthesizeMuseumTts(data: { museumId: number | string; voiceId: number | string; text: string }) {
+// signal：用户关闭语音/停止朗读时中止飞行中的请求，避免浪费
+export async function synthesizeMuseumTts(data: { museumId: number | string; voiceId: number | string; text: string }, signal?: AbortSignal) {
   const payload = await signTtsPayload(data.text);
-  return publicRequest.post('/voice/tts/museum', { ...data, ...payload }).then(r => r.json());
+  return publicRequest.post('/voice/tts/museum', { ...data, ...payload }, signal).then(r => r.json());
 }
 
 // 获取启用中的音色档案列表（需登录，apps-chat测试页音色选择用）
