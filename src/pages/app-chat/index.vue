@@ -333,8 +333,8 @@ function enqueueSynth(st: SegmentState, index: number): Promise<void> {
 }
 
 async function doSynthWithRetry(st: SegmentState, index: number, attempt: number, mySession: number): Promise<void> {
-  if (ttsQuotaBlocked || st.urls[index] || mySession !== ttsSession)
-    return;
+  if (ttsQuotaBlocked || st.urls[index] || mySession !== ttsSession || !currentVoiceProfileId.value)
+    return; // 排队期间音色被关闭，放弃该段
   // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
   const text = st.texts[index];
   try {
