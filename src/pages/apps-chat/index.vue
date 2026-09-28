@@ -228,23 +228,112 @@ function cutSegments(st: SegmentState, flush: boolean) {
   st.consumed = start;
 }
 
-// 发起单段合成（幂等：已合成/合成中跳过）
-function startSegmentSynth(key: number, index: number) {
-  const st = segmentStore.get(key);
-  if (!st || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
-    return;
-  st.pending[index] = synthesizeTts({ voiceId: currentVoiceProfileId.value, text: st.texts[index] })
-    .then((res) => {
-      delete st.pending[index];
-      if (res.code === 200 && res.data?.dataUrl)
-        st.urls[index] = res.data.dataUrl;
-    })
-    .catch(() => {
-      delete st.pending[index];
-    });
+// TTS合成串行队列 + 失败自动重试：
+// 1) 阿里云语音合成有QPS限制，流式生成时各段立即并发请求会触发429限流；
+//    全局串行（同一时刻至多一个请求在飞）从源头降低请求速率
+// 2) 429/异常时递增退避自动重试，避免某段（尤其首段）合成失败被播放链跳过导致少读内容
+// 3) 重试用尽仍失败才放弃该段
+// 4) 停止语音（关开关/停朗读/切消息/离开页面）时作废排队任务，避免浪费
+const SYNTH_MAX_RETRY = 3;
+let synthChain: Promise<void> = Promise.resolve();
+// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求
+let ttsSession = 0;
+// 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止。
+// 通用接口 synthesizeTts 暂不支持传入 signal，飞行中请求由代际检测在返回后丢弃
+let synthAbort: AbortController | null = null;
+// 日配额熔断：当日已确认语音额度超限后，跳过所有后续合成请求（含停止后新入队的任务），
+// 避免流式回复持续切段导致连环无效请求与重复弹提示；刷新页面或次日自然重置
+let ttsDailyQuotaExceeded = false;
+
+// 日配额超限统一处理：提示只弹一次，随后熔断当日合成并停止朗读流水线
+function handleTtsQuotaExceeded() {
+  if (!ttsDailyQuotaExceeded) {
+    ttsDailyQuotaExceeded = true;
+    ElMessage.warning('语音额度超限，请明日再试');
+  }
+  stopAudio();
 }
 
-// SSE流式过程中持续喂入文本：增量切块并立即预合成；前缀变化（如代码块闭合）时重置重切
+function enqueueSynth(st: SegmentState, index: number): Promise<void> {
+  const mySession = ttsSession;
+  const run = synthChain.then(() => doSynthWithRetry(st, index, 0, mySession));
+  // 链上吞掉异常，保证后续排队任务不被中断
+  synthChain = run.catch(() => {});
+  return run;
+}
+
+async function doSynthWithRetry(st: SegmentState, index: number, attempt: number, mySession: number): Promise<void> {
+  if (ttsDailyQuotaExceeded || st.urls[index] || mySession !== ttsSession)
+    return;
+  // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
+  const text = st.texts[index];
+  const voiceId = currentVoiceProfileId.value;
+  if (voiceId == null)
+    return;
+  try {
+    synthAbort = new AbortController();
+    const res = await synthesizeTts({ voiceId, text });
+    if (mySession !== ttsSession)
+      return; // 请求期间语音被停止，丢弃结果
+    if (res.code === 200 && res.data?.dataUrl) {
+      // 写回前校验段未被重切，避免旧结果写到新段位置
+      if (st.texts[index] === text)
+        st.urls[index] = res.data.dataUrl;
+      return;
+    }
+    // 日配额超限（后端文案"今日语音合成次数已达上限"）：明日才恢复，重试与后续段均无意义
+    // ——熔断当日所有合成请求并停止朗读流水线（提示只弹一次）
+    if (res.code !== 200 && res.msg?.includes('已达上限')) {
+      handleTtsQuotaExceeded();
+      return;
+    }
+  }
+  catch {
+    // 请求异常（网络失败/被中止）：api层已将业务码统一转为resolve返回（含超限500），这里只处理真异常；
+    // 语音已停止则直接放弃，不再重试
+    if (mySession !== ttsSession)
+      return;
+  }
+  finally {
+    synthAbort = null;
+  }
+  if (attempt < SYNTH_MAX_RETRY) {
+    await sleep(800 * (attempt + 1));
+    if (mySession !== ttsSession)
+      return; // 重试等待期间语音被停止
+    return doSynthWithRetry(st, index, attempt + 1, mySession);
+  }
+}
+
+// 发起单段合成（幂等：已合成/合成中跳过），进入全局串行队列执行
+function startSegmentSynth(key: number, index: number) {
+  const st = segmentStore.get(key);
+  if (!st || ttsDailyQuotaExceeded || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
+    return;
+  const p = enqueueSynth(st, index)
+    .catch(() => {})
+    .finally(() => {
+      if (st.pending[index] === p)
+        delete st.pending[index];
+    });
+  st.pending[index] = p;
+}
+
+// 按播放进度动态合成：只合成播放位置附近的段（当前段+预读窗口），播放推进时再合成后续段。
+// 停止播放后未到达的段不再合成，避免长消息剩余段落全部预合成、中途停止浪费额度；
+// 串行队列下合成一段约1秒、播放一段数秒，预读2段足够无缝衔接
+const SYNTH_LOOKAHEAD = 2;
+
+function synthUpTo(key: number, index: number) {
+  const st = segmentStore.get(key);
+  if (!st)
+    return;
+  const upto = Math.min(index + SYNTH_LOOKAHEAD, st.texts.length - 1);
+  for (let i = index; i <= upto; i++)
+    startSegmentSynth(key, i);
+}
+
+// SSE流式过程中持续喂入文本：增量切块（合成由播放进度驱动）；前缀变化（如代码块闭合）时重置重切
 // autoStart=false时不自动启动播放（供手动播放路径使用，避免与手动播放链叠加成双声）
 function feedSegments(key: number, content: string, autoStart = true) {
   if (!voiceEnabled.value || !content)
@@ -266,38 +355,33 @@ function feedSegments(key: number, content: string, autoStart = true) {
   }
   st.rawText = text;
   cutSegments(st, false);
-  // 仅自动播报开启或该消息正在播放中时才预合成（边生成边合成秒出声）；
-  // 自动播报关闭时只切分缓存文本、不发任何合成请求，点喇叭时再批量合成
-  if (autoPlayVoice.value || playingKey.value === key)
-    st.texts.forEach((_, i) => startSegmentSynth(key, i));
 
-  // 自动播报：首段切出即开始播放（不打断手动播放中的其它消息）
+  // 合成由播放进度动态驱动（见synthUpTo）：自动播报开启时首段切出即开始播放，
+  // 播放链推进时按预读窗口合成；这里不做全量预合成，避免中途停止浪费额度
   if (autoStart && autoPlayVoice.value && playingKey.value == null && st.texts.length > 0)
     startPlayback(key);
 }
 
 // 统一播放入口：先终止一切旧播放会话（会话代号+1使残留异步链失效），
 // 保证任意时刻至多一条播放链、一个音频实例——否则会出现双声/停不掉
+// 仅停止播放不动作废合成队列：此刻新消息的合成任务可能已入队
 function startPlayback(key: number) {
-  stopAudio();
+  stopPlaybackOnly();
   playingKey.value = key;
   playSegmentsLoop(key, playSession);
 }
 
 // 消息生成结束：收尾切块（尾部不足一段也切出）
+// 尾部段合成由播放链按进度驱动，不做全量预合成
 function finishMessageTts(key: number) {
   const st = segmentStore.get(key);
   if (st && !st.finished) {
     st.finished = true;
     cutSegments(st, true);
-    // 仅自动播报开启或该消息正在播放中时补合成尾部段；关闭自动播报时不发请求
-    // （手动播放路径 playMessage 会自行批量合成，不依赖这里）
-    if (autoPlayVoice.value || playingKey.value === key)
-      st.texts.forEach((_, i) => startSegmentSynth(key, i));
   }
 }
 
-// 顺序播放各分段音频；下一段未就绪时等它的合成完成（合成早已并行发起），实现边合成边播
+// 顺序播放各分段音频；按播放进度动态合成（当前段+预读窗口），段未就绪时等合成完成，实现边合成边播
 async function playSegmentsLoop(key: number, session: number) {
   const st = segmentStore.get(key);
   if (!st)
@@ -310,9 +394,8 @@ async function playSegmentsLoop(key: number, session: number) {
       await sleep(250);
       continue;
     }
-    // 预启动下一段合成，保持流水线：当前段播放时下一段已在合成
-    if (i + 1 < st.texts.length)
-      startSegmentSynth(key, i + 1);
+    // 按播放位置入队当前段+预读窗口的合成，保持流水线不过度预合成
+    synthUpTo(key, i);
     if (st.pending[i])
       await st.pending[i];
     if (session !== playSession)
@@ -323,7 +406,7 @@ async function playSegmentsLoop(key: number, session: number) {
       i++;
     }
     else {
-      i++; // 该段合成失败，跳过
+      i++; // 该段重试后仍失败（重试已在合成队列内完成），跳过
     }
   }
   if (session === playSession && playingKey.value === key)
@@ -353,7 +436,8 @@ function playMessage(item: MessageItem) {
     return;
   st.finished = true;
   cutSegments(st, true);
-  st.texts.forEach((_, i) => startSegmentSynth(item.key, i));
+  // 只入队开头预读窗口，后续段由播放链按进度动态合成
+  synthUpTo(item.key, 0);
   startPlayback(item.key);
 }
 
@@ -378,8 +462,9 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
   });
 }
 
-// 停止朗读：会话代号+1使播放链退出，并中断当前音频
-function stopAudio() {
+// 仅停止播放（会话代号+1使播放链退出、中断当前音频），不作废合成队列：
+// 切换播放（startPlayback接管）时用——新消息的合成任务在入队后不能被作废
+function stopPlaybackOnly() {
   playSession++;
   if (audio) {
     audio.onended = null;
@@ -390,6 +475,15 @@ function stopAudio() {
   audioDone?.();
   audioDone = null;
   playingKey.value = null;
+}
+
+// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务、中止飞行中的合成请求
+// （用户关闭语音开关/停止朗读/切换消息/离开页面时调用，避免不再需要的合成浪费）
+function stopAudio() {
+  stopPlaybackOnly();
+  ttsSession++;
+  synthAbort?.abort();
+  synthAbort = null;
 }
 
 // 回复完成后自动播报（自动开关开启且该消息未在播放中时，从头启动播放）

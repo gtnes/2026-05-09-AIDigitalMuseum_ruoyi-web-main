@@ -1,4 +1,5 @@
 import type { AppChatApp, AppChatSendDTO, MuseumChatSendDTO, VoiceProfileItem } from './types';
+import { useUserStore } from '@/stores';
 import { get, post } from '@/utils/request';
 
 // 公开请求（不带 JWT）
@@ -63,11 +64,23 @@ async function signTtsPayload(text: string) {
   return { timestamp, nonce, sign };
 }
 
-// 语音合成（需登录，自动携带token）：按音色档案合成（voiceId来自博物馆智能体配置），返回dataUrl可直接播放
-// 请求自动附带HMAC签名+时间戳+随机串（后端TtsRequestGuard校验）
+// 语音合成（需登录，手动携带JWT走原生fetch）：按音色档案合成（voiceId来自博物馆智能体配置），返回dataUrl可直接播放
+// 请求自动附带HMAC签名+时间戳+随机串（后端TtsRequestGuard校验）。
+// 不走全局hook-fetch：其插件链在非200时会把reject包装成空对象resolve（body丢失），页面无法识别日配额超限熔断；
+// 原生fetch原样返回{code,msg,data}（与博物馆语音接口语义一致），超限提示由页面统一处理，也避免全局ElMessage重复弹窗
 export async function synthesizeTts(data: { voiceId: number | string; text: string }) {
   const payload = await signTtsPayload(data.text);
-  return post('/voice/tts', { ...data, ...payload }).json();
+  const userStore = useUserStore();
+  const res = await fetch(`${import.meta.env.VITE_API_URL}/voice/tts`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'authorization': `Bearer ${userStore.token}`,
+      'ClientID': import.meta.env.VITE_CLIENT_ID,
+    },
+    body: JSON.stringify({ ...data, ...payload }),
+  });
+  return res.json();
 }
 
 // 博物馆C端语音合成（公开接口，需museumId；后端校验服务到期与音色绑定，保留HMAC签名防直刷）

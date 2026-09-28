@@ -310,6 +310,18 @@ let synthChain: Promise<void> = Promise.resolve();
 let ttsSession = 0;
 // 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止
 let synthAbort: AbortController | null = null;
+// 日配额熔断：当日已确认语音额度超限后，跳过所有后续合成请求（含停止后新入队的任务），
+// 避免流式回复持续切段导致连环无效请求与重复弹提示；刷新页面或次日自然重置
+let ttsDailyQuotaExceeded = false;
+
+// 日配额超限统一处理：提示只弹一次，随后熔断当日合成并停止朗读流水线
+function handleTtsQuotaExceeded() {
+  if (!ttsDailyQuotaExceeded) {
+    ttsDailyQuotaExceeded = true;
+    ElMessage.warning('语音额度超限，请明日再试');
+  }
+  stopAudio();
+}
 
 function enqueueSynth(st: SegmentState, index: number): Promise<void> {
   const mySession = ttsSession;
@@ -320,7 +332,7 @@ function enqueueSynth(st: SegmentState, index: number): Promise<void> {
 }
 
 async function doSynthWithRetry(st: SegmentState, index: number, attempt: number, mySession: number): Promise<void> {
-  if (st.urls[index] || mySession !== ttsSession)
+  if (ttsDailyQuotaExceeded || st.urls[index] || mySession !== ttsSession)
     return;
   // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
   const text = st.texts[index];
@@ -336,10 +348,9 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
       return;
     }
     // 日配额超限（后端文案"今日语音合成次数已达上限"）：明日才恢复，重试与后续段均无意义
-    // ——停止整个朗读流水线（作废排队任务、中止飞行请求、停止播放）并轻提示用户
+    // ——熔断当日所有合成请求并停止整个朗读流水线（提示只弹一次）
     if (res.code !== 200 && res.msg?.includes('已达上限')) {
-      stopAudio();
-      ElMessage.warning('语音额度超限，请明日再试');
+      handleTtsQuotaExceeded();
       return;
     }
   }
@@ -362,7 +373,7 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
 // 发起单段合成（幂等：已合成/合成中跳过），进入全局串行队列执行
 function startSegmentSynth(key: number, index: number) {
   const st = segmentStore.get(key);
-  if (!st || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
+  if (!st || ttsDailyQuotaExceeded || st.urls[index] || st.pending[index] || !currentVoiceProfileId.value)
     return;
   const p = enqueueSynth(st, index)
     .catch(() => {})
