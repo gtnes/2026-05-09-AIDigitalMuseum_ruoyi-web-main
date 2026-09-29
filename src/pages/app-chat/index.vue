@@ -3,7 +3,7 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { AppChatApp } from '@/api/app-chat/types';
 import type { MuseumChatApp, MuseumInfo, MuseumVideo } from '@/api/museum/types';
-import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Picture, Refresh, VideoPlay } from '@element-plus/icons-vue';
+import { ArrowDownBold, ArrowLeft, ArrowRight, ChatDotRound, Check, CopyDocument, Loading, Picture, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { Sender } from 'vue-element-plus-x';
@@ -206,6 +206,8 @@ function toggleFeature(key: string) {
 let ttsQuotaBlocked = false;
 // 当前朗读中的消息key
 const playingKey = ref<number | null>(null);
+// 合成请求进行中（已点击播报但首段音频尚未返回播放）的消息key：喇叭按钮显示加载动画
+const ttsLoadingKey = ref<number | null>(null);
 let audio: HTMLAudioElement | null = null;
 // 当前音频播放结束的回调（停止朗读时手动触发，使播放链退出等待）
 let audioDone: (() => void) | null = null;
@@ -434,6 +436,8 @@ function feedSegments(key: number, content: string, autoStart = true) {
 function startPlayback(key: number) {
   stopPlaybackOnly();
   playingKey.value = key;
+  // 首段音频返回并开播前，喇叭按钮显示加载动画
+  ttsLoadingKey.value = key;
   playSegmentsLoop(key, playSession);
 }
 
@@ -475,8 +479,12 @@ async function playSegmentsLoop(key: number, session: number) {
       i++; // 该段重试后仍失败（重试已在合成队列内完成），跳过
     }
   }
-  if (session === playSession && playingKey.value === key)
+  if (session === playSession && playingKey.value === key) {
     playingKey.value = null;
+    // 全部段播完/跳过仍未清除时（如所有段合成失败），收尾加载态
+    if (ttsLoadingKey.value === key)
+      ttsLoadingKey.value = null;
+  }
 }
 
 // 朗读/停止朗读一条AI消息
@@ -529,6 +537,9 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
       // play() resolve后再置true，防止已被停止（settled）时误标为播放中
       if (!settled)
         audioPlaying.value = true;
+      // 首段音频已返回并开播：结束加载动画
+      if (ttsLoadingKey.value === key)
+        ttsLoadingKey.value = null;
     }).catch(done);
   });
 }
@@ -547,6 +558,8 @@ function stopPlaybackOnly() {
   audioDone?.();
   audioDone = null;
   playingKey.value = null;
+  // 停止/切换播放时同步结束加载动画（startPlayback随后会按需重新置位）
+  ttsLoadingKey.value = null;
 }
 
 // 彻底停止朗读：在停止播放基础上，作废排队中的合成任务、中止飞行中的合成请求
@@ -1187,15 +1200,18 @@ function sendMessageByKey(key: number) {
                     <CopyDocument v-else />
                   </el-icon>
                 </button>
-                <!-- 自绘小喇叭图标（Element Plus无喇叭图标）：允许播报=喇叭+声波，禁止播报=喇叭+斜线 -->
+                <!-- 自绘小喇叭图标（Element Plus无喇叭图标）：允许播报=喇叭+声波，禁止播报=喇叭+斜线；合成请求中=旋转加载图标 -->
                 <button
                   v-if="voiceEnabled"
                   class="tts-btn"
-                  :class="{ 'is-playing': playingKey === item.key }"
+                  :class="{ 'is-playing': playingKey === item.key, 'is-loading': ttsLoadingKey === item.key }"
                   @click="toggleBubblePlay(item)"
                 >
+                  <el-icon v-if="ttsLoadingKey === item.key" :size="12" class="tts-loading-ico">
+                    <Loading />
+                  </el-icon>
                   <svg
-                    v-if="autoPlayVoice"
+                    v-else-if="autoPlayVoice"
                     class="tts-ico"
                     viewBox="0 0 24 24"
                     fill="none"
@@ -1732,7 +1748,8 @@ function sendMessageByKey(key: number) {
       background-color: transparent;
       border-color: rgb(var(--theme-primary-rgb), 40%);
 
-      // 播放中：主色实色高亮
+      // 合成中 / 播放中：主色实色高亮
+      &.is-loading,
       &.is-playing {
         color: var(--theme-primary);
         border-color: var(--theme-primary);
@@ -2147,6 +2164,18 @@ function sendMessageByKey(key: number) {
     display: block;
     width: 12px;
     height: 12px;
+  }
+  // 合成请求中的旋转加载图标
+  .tts-loading-ico {
+    animation: tts-ico-spin 0.9s linear infinite;
+  }
+}
+@keyframes tts-ico-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 // 输入框下方免责声明
