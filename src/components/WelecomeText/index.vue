@@ -7,7 +7,7 @@ import { useUserStore } from '@/stores';
 const greeting = useTimeGreeting();
 const userStore = useUserStore();
 
-const username = computed(() => userStore.userInfo?.username ?? '我是 RuoYi-AI智能助手');
+const username = computed(() => userStore.userInfo?.username ?? '我是 YunShan-AI智能助手');
 </script>
 
 <template>

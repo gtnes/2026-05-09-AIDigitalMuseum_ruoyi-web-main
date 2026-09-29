@@ -1,9 +1,11 @@
 {
   "name": "ruoyi-web",
+  "name": "YunShan-web",
   "type": "module",
   "version": "0.0.0",
   "private": true,
   "description": "ruoyi-web open-source PC AI template",
+  "description": "YunShan-web open-source PC AI template",
   "author": {
     "name": "HeJiaYue520",
     "email": "2834007710@qq.com",

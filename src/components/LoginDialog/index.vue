@@ -66,8 +66,8 @@ function onAfterLeave() {
           <section class="login-section">
             <div class="login-header">
               <div class="logo-wrap">
-                <img :src="logoPng" class="logo-img" alt="RuoYi-AI">
-                <span class="logo-text">RuoYi-AI</span>
+                <img :src="logoPng" class="logo-img" alt="YunShan-AI">
+                <span class="logo-text">YunShan-AI</span>
               </div>
 
               <button
@@ -87,7 +87,7 @@ function onAfterLeave() {
                   {{ loginFormType === 'RegistrationForm' ? '创建新账号' : '欢迎回来' }}
                 </p>
                 <h2 class="welcome-title">
-                  {{ loginFormType === 'RegistrationForm' ? '开启你的智能工作空间' : '登录 RuoYi-AI' }}
+                  {{ loginFormType === 'RegistrationForm' ? '开启你的智能工作空间' : '登录 YunShan-AI' }}
                 </h2>
                 <p class="welcome-desc">
                   {{ loginFormType === 'RegistrationForm' ? '使用邮箱快速注册，立即体验完整 AI 能力。' : '继续你的对话、应用与创作，数据将安全同步。' }}
