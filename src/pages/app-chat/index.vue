@@ -310,13 +310,12 @@ function cutSegments(st: SegmentState, flush: boolean) {
 //    全局串行（同一时刻至多一个请求在飞）从源头降低请求速率
 // 2) 429/异常时递增退避自动重试，避免某段（尤其首段）合成失败被播放链跳过导致少读内容
 // 3) 重试用尽仍失败才放弃该段
-// 4) 停止语音（关开关/停朗读/切消息/离开页面）时作废排队任务并中止飞行中请求，避免浪费
+// 4) 停止语音（关开关/停朗读/切消息/离开页面）时作废排队任务（代际变化即放弃，不再发请求）；
+//    飞行中的请求不abort（浏览器inspector会把主动中止的fetch打成控制台错误），放任其完成后丢弃结果
 const SYNTH_MAX_RETRY = 3;
 let synthChain: Promise<void> = Promise.resolve();
-// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求
+// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求；已返回的结果同样因代际不符被丢弃
 let ttsSession = 0;
-// 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止
-let synthAbort: AbortController | null = null;
 // 语音额度超限统一处理：同一轮熔断内提示只弹一次，随后中断未发送的合成请求并停止朗读流水线
 function handleTtsQuotaExceeded() {
   if (!ttsQuotaBlocked) {
@@ -340,8 +339,7 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
   // 执行时取当前文本：排队期间段可能因前缀变化被重切，用最新内容合成
   const text = st.texts[index];
   try {
-    synthAbort = new AbortController();
-    const res = await synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text }, synthAbort.signal);
+    const res = await synthesizeMuseumTts({ museumId: urlMuseumId.value, voiceId: currentVoiceProfileId.value, text });
     if (mySession !== ttsSession)
       return; // 请求期间语音被停止，丢弃结果
     if (res.code === 200 && res.data?.dataUrl) {
@@ -358,12 +356,9 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
     }
   }
   catch {
-    // 被中止或请求异常：语音已停止则直接放弃，不再重试
+    // 请求异常：语音已停止则直接放弃，不再重试
     if (mySession !== ttsSession)
       return;
-  }
-  finally {
-    synthAbort = null;
   }
   if (attempt < SYNTH_MAX_RETRY) {
     await sleep(800 * (attempt + 1));
@@ -562,13 +557,13 @@ function stopPlaybackOnly() {
   ttsLoadingKey.value = null;
 }
 
-// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务、中止飞行中的合成请求
+// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务（代际+1后不再发送、返回结果丢弃）
 // （用户关闭语音开关/停止朗读/切换消息/离开页面时调用，避免不再需要的合成浪费）
+// 飞行中的请求不abort：浏览器inspector会把主动中止的fetch打成"AbortError"控制台错误，
+// 放任其完成（串行队列下至多1段、约1秒）后由代际校验丢弃即可
 function stopAudio() {
   stopPlaybackOnly();
   ttsSession++;
-  synthAbort?.abort();
-  synthAbort = null;
 }
 
 // 回复完成后自动播报（自动开关开启且该消息未在播放中时，从头启动播放）

@@ -241,11 +241,8 @@ function cutSegments(st: SegmentState, flush: boolean) {
 // 4) 停止语音（关开关/停朗读/切消息/离开页面）时作废排队任务，避免浪费
 const SYNTH_MAX_RETRY = 3;
 let synthChain: Promise<void> = Promise.resolve();
-// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求
+// 语音停止时+1：排队/重试中的任务检测到代际变化即放弃，不再发请求；已返回的结果同样因代际不符被丢弃
 let ttsSession = 0;
-// 当前飞行中的合成请求（串行队列同时至多一个），停止语音时中止。
-// 通用接口 synthesizeTts 暂不支持传入 signal，飞行中请求由代际检测在返回后丢弃
-let synthAbort: AbortController | null = null;
 // 语音额度超限统一处理：同一轮熔断内提示只弹一次，随后中断未发送的合成请求并停止朗读流水线
 function handleTtsQuotaExceeded() {
   if (!ttsQuotaBlocked) {
@@ -272,7 +269,6 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
   if (voiceId == null)
     return;
   try {
-    synthAbort = new AbortController();
     const res = await synthesizeTts({ voiceId, text });
     if (mySession !== ttsSession)
       return; // 请求期间语音被停止，丢弃结果
@@ -290,13 +286,10 @@ async function doSynthWithRetry(st: SegmentState, index: number, attempt: number
     }
   }
   catch {
-    // 请求异常（网络失败/被中止）：api层已将业务码统一转为resolve返回（含超限500），这里只处理真异常；
+    // 请求异常（网络失败）：api层已将业务码统一转为resolve返回（含超限500），这里只处理真异常；
     // 语音已停止则直接放弃，不再重试
     if (mySession !== ttsSession)
       return;
-  }
-  finally {
-    synthAbort = null;
   }
   if (attempt < SYNTH_MAX_RETRY) {
     await sleep(800 * (attempt + 1));
@@ -478,13 +471,11 @@ function stopPlaybackOnly() {
   playingKey.value = null;
 }
 
-// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务、中止飞行中的合成请求
+// 彻底停止朗读：在停止播放基础上，作废排队中的合成任务（代际+1后不再发送、返回结果丢弃）
 // （用户关闭语音开关/停止朗读/切换消息/离开页面时调用，避免不再需要的合成浪费）
 function stopAudio() {
   stopPlaybackOnly();
   ttsSession++;
-  synthAbort?.abort();
-  synthAbort = null;
 }
 
 // 回复完成后自动播报（自动开关开启且该消息未在播放中时，从头启动播放）
