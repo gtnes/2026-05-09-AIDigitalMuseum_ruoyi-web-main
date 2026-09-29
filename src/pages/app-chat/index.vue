@@ -1254,17 +1254,13 @@ function sendMessageByKey(key: number) {
               </div>
 
               <div v-if="!editingMessageKeys.includes(item.key)" class="copy-button-container">
-                <el-tooltip content="复制" placement="bottom">
-                  <el-button
-                    class="copy-btn"
-                    :icon="copyIconMap[item.key] || 'CopyDocument'"
-                    size="small"
-                    @click="copyToClipboard(item.content, item.key)"
-                  />
-                </el-tooltip>
-                <el-tooltip content="编辑" placement="bottom">
-                  <el-button class="copy-btn" icon="Edit" size="small" @click="startEditing(item)" />
-                </el-tooltip>
+                <el-button
+                  class="copy-btn"
+                  :icon="copyIconMap[item.key] || 'CopyDocument'"
+                  size="small"
+                  @click="copyToClipboard(item.content, item.key)"
+                />
+                <el-button class="copy-btn" icon="Edit" size="small" @click="startEditing(item)" />
               </div>
             </div>
           </template>
