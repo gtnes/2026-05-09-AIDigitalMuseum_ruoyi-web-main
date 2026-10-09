@@ -36,13 +36,12 @@ const filteredVideos = computed(() =>
     : videoList.value.filter(v => v.showCategory === activeCategory.value),
 );
 
-// 置顶视频进入顶部banner轮播，瀑布流只展示非置顶视频
-const topVideos = computed(() => filteredVideos.value.filter(v => v.topFlag === 1));
-const normalVideos = computed(() => filteredVideos.value.filter(v => v.topFlag !== 1));
+// 置顶banner不受类别筛选影响，始终显示全部置顶视频；瀑布流展示当前筛选列表（含置顶）
+const topVideos = computed(() => videoList.value.filter(v => v.topFlag === 1));
 
 // 左右双列（按索引奇偶分列）：横向顺序排列，奇数个时最后一个落在左列
-const leftVideos = computed(() => normalVideos.value.filter((_, i) => i % 2 === 0));
-const rightVideos = computed(() => normalVideos.value.filter((_, i) => i % 2 === 1));
+const leftVideos = computed(() => filteredVideos.value.filter((_, i) => i % 2 === 0));
+const rightVideos = computed(() => filteredVideos.value.filter((_, i) => i % 2 === 1));
 
 /* ==================== 置顶banner轮播 ==================== */
 const bannerRef = ref<HTMLElement | null>(null);
@@ -86,8 +85,8 @@ function restartBannerTimer() {
   }, 5000);
 }
 
-// 列表或筛选变化时：banner归位并重建轮播
-watch(filteredVideos, async () => {
+// 置顶集合变化时（数据加载）：banner归位并重建轮播；切换类别不影响banner
+watch(topVideos, async () => {
   bannerIndex.value = 0;
   await nextTick();
   bannerRef.value?.scrollTo({ left: 0 });
@@ -127,7 +126,8 @@ onMounted(async () => {
 
 // 点击封面进入播放页（同时记录播放上下文：完整列表顺序，供播放页上下滑切换视频）
 function openVideo(video: MuseumVideo) {
-  const orderedList = [...topVideos.value, ...normalVideos.value];
+  // banner置顶可能不属于当前筛选类别，播放顺序=全部置顶在前+当前类别非置顶在后（置顶不重复）
+  const orderedList = [...topVideos.value, ...filteredVideos.value.filter(v => v.topFlag !== 1)];
   try {
     sessionStorage.setItem('videoPlayContext', JSON.stringify({
       ids: orderedList.map(v => String(v.id)),
@@ -221,8 +221,8 @@ function formatDuration(sec?: number) {
       </div>
     </div>
 
-    <!-- 瀑布流：左右双列，卡片高度随封面（横版/竖版）自适应 -->
-    <div v-if="normalVideos.length > 0" class="video-falls">
+    <!-- 瀑布流：左右双列，卡片高度随封面（横版/竖版）自适应（含置顶视频） -->
+    <div v-if="filteredVideos.length > 0" class="video-falls">
       <div class="fall-col">
         <div
           v-for="video in leftVideos"
@@ -277,9 +277,6 @@ function formatDuration(sec?: number) {
           </div>
         </div>
       </div>
-    </div>
-    <div v-else-if="loaded && topVideos.length > 0" class="video-no-more">
-      该类别下暂无更多视频
     </div>
     <div v-else-if="loaded" class="video-empty">
       <el-icon :size="40" class="video-empty-icon">
@@ -410,14 +407,6 @@ function formatDuration(sec?: number) {
       background: #825741;
     }
   }
-}
-
-/* 仅剩置顶banner、无更多列表视频时的轻提示 */
-.video-no-more {
-  padding-top: 26px;
-  color: #b0a289;
-  font-size: 13px;
-  text-align: center;
 }
 
 /* ==================== 标题 + 类别切换 ==================== */
