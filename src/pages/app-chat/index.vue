@@ -208,11 +208,51 @@ let ttsQuotaBlocked = false;
 const playingKey = ref<number | null>(null);
 // 合成请求进行中（已点击播报但首段音频尚未返回播放）的消息key：喇叭按钮显示加载动画
 const ttsLoadingKey = ref<number | null>(null);
+// 复用同一个音频元素（不每次new Audio）：微信/iOS等WebView的音频解锁绑定在元素上，
+// 已在用户手势内成功播放过一次的元素，后续换src播放不再要求手势
 let audio: HTMLAudioElement | null = null;
 // 当前音频播放结束的回调（停止朗读时手动触发，使播放链退出等待）
 let audioDone: (() => void) | null = null;
 // 播放会话代号：每次停止/切换时+1，旧的异步播放链检测到变化自动退出
 let playSession = 0;
+
+// 极短静音音频（8kHz/8bit/单声道，20ms）：仅用于在用户手势内"点亮"共享音频元素
+const SILENT_WAV_URL = 'data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YaAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA';
+let audioUnlocked = false;
+// 解锁静音播放进行中标记：防止解锁完成后pause()误伤已被播放链接管的真实音频
+let unlockingAudio = false;
+
+// 微信内置浏览器（尤其iOS的WKWebView）要求audio.play()必须在用户手势的同步调用栈中执行。
+// 点击播报后首段音频需等待TTS合成（约1秒异步间隙），手势上下文已丢失，play()会被静默拒绝
+// （NotAllowedError），播放链误判该段播完继续推进——所有段请求都发送但全程无声。
+// 修复：首次用户交互（点任何地方：喇叭/输入框/发送等）时，在手势同步栈内用共享元素播放
+// 极短静音完成解锁；之后所有播放（含自动播报）复用该已解锁元素
+function unlockAudioOnFirstTouch() {
+  if (audioUnlocked)
+    return;
+  audioUnlocked = true;
+  window.removeEventListener('touchend', unlockAudioOnFirstTouch);
+  window.removeEventListener('click', unlockAudioOnFirstTouch);
+  // 元素正在播放真实音频：此前已解锁过，不重设src干扰
+  // （注意不能用playingKey判断：点喇叭后播放链先置位playingKey再等首段合成，恰是最需解锁的时刻）
+  if (audio && !audio.paused)
+    return;
+  const el = audio || (audio = new Audio());
+  el.onended = null;
+  el.onerror = null;
+  el.src = SILENT_WAV_URL;
+  unlockingAudio = true;
+  el.play().then(() => {
+    if (unlockingAudio) {
+      unlockingAudio = false;
+      el.pause();
+    }
+  }).catch(() => {
+    unlockingAudio = false;
+  });
+}
+window.addEventListener('touchend', unlockAudioOnFirstTouch);
+window.addEventListener('click', unlockAudioOnFirstTouch);
 
 // 语音功能是否可用（管理端语音开关开启 且 当前智能体配置了AI语音）
 const voiceEnabled = computed(() => voiceSwitchOn.value && currentVoiceProfileId.value != null);
@@ -513,7 +553,12 @@ function playMessage(item: MessageItem) {
 // 播放单段音频，播完/出错/被停止时resolve
 function playAudio(key: number, dataUrl: string): Promise<void> {
   return new Promise((resolve) => {
-    audio = new Audio(dataUrl);
+    // 复用共享元素（微信/iOS的WebView音频解锁绑定在元素上，新元素未解锁会被静默拒绝）
+    audio = audio || new Audio();
+    unlockingAudio = false; // 播放链接管元素，解锁流程的pause()不再生效
+    audio.onended = null;
+    audio.onerror = null;
+    audio.src = dataUrl;
     playingKey.value = key;
     let settled = false;
     const done = () => {
@@ -522,7 +567,6 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
       settled = true;
       audioPlaying.value = false;
       audioDone = null;
-      audio = null;
       resolve();
     };
     audioDone = done;
@@ -548,7 +592,7 @@ function stopPlaybackOnly() {
     audio.onended = null;
     audio.onerror = null;
     audio.pause();
-    audio = null;
+    // 保留元素实例不销毁（WebView音频解锁绑定在元素上），下次播放换src复用
   }
   audioDone?.();
   audioDone = null;
@@ -651,6 +695,11 @@ async function init() {
     const res = await getAppInfo(urlAppId.value);
     if (res.code === 200 && res.data) {
       const app = res.data as AppChatApp;
+      // 后端OSS签名链接为http://协议，https站点下会被浏览器作为混合内容拦截，
+      // 标题栏头像偶发通过浏览器自动升级加载成功，气泡头像则加载失败；
+      // S3签名只覆盖host头与协议无关（https访问实测可用），统一升级为https保证两处头像稳定加载
+      if (app.appShow?.startsWith('http://'))
+        app.appShow = `https://${app.appShow.slice('http://'.length)}`;
       currentApp.value = app;
       // 预设问题模块放在对话流第一条；欢迎语紧随其后
       if (presetQuestions.value.length)
@@ -715,6 +764,8 @@ onMounted(() => {
 onUnmounted(() => {
   closeSSE();
   stopAudio();
+  window.removeEventListener('touchend', unlockAudioOnFirstTouch);
+  window.removeEventListener('click', unlockAudioOnFirstTouch);
   chatAreaRef.value?.querySelector('.el-bubble-list')?.removeEventListener('scroll', onChatListScroll);
 });
 
