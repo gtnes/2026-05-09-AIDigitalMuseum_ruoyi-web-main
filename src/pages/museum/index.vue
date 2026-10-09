@@ -42,7 +42,8 @@ watch([activeTab, pageIndex], () => {
   sessionStorage.setItem(stateKey.value, JSON.stringify({ tab: activeTab.value, index: pageIndex.value }));
 });
 
-const apps = computed<MuseumChatApp[]>(() => museum.value?.chatapps || []);
+// 首页圆圈区仅显示"首页显示"开启的智能体（管理端homeShow=0隐藏，null视为显示）
+const apps = computed<MuseumChatApp[]>(() => (museum.value?.chatapps || []).filter(app => app.homeShow !== 0));
 const currentApp = computed(() => apps.value[pageIndex.value] || null);
 
 // 展示名称：优先用chat_app的应用描述，其次配置的description，最后回退appName
@@ -85,10 +86,11 @@ const tabs = computed(() => {
   const list: { key: TabKey; label: string; icon: typeof Avatar }[] = [
     { key: 'ai', label: 'AI馆员', icon: Avatar },
   ];
+  // 标签显示名支持管理端配置模块别名，未配置时用默认文案
   if (showVideoTab.value)
-    list.push({ key: 'video', label: 'AI视频', icon: VideoPlay });
+    list.push({ key: 'video', label: museum.value?.videoAlias?.trim() || 'AI视频', icon: VideoPlay });
   if (showVrTab.value)
-    list.push({ key: 'vr', label: '虚拟空间', icon: Compass });
+    list.push({ key: 'vr', label: museum.value?.vrAlias?.trim() || '虚拟空间', icon: Compass });
   return list;
 });
 

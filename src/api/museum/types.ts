@@ -25,6 +25,8 @@ export interface MuseumChatApp {
   duty: string;
   /** 展示排序 */
   sort: number;
+  /** 首页显示（管理端配置，0=不在博物馆首页圆圈区显示，null视为显示） */
+  homeShow?: 0 | 1 | null;
 }
 
 export interface MuseumInfo {
@@ -50,6 +52,10 @@ export interface MuseumInfo {
   videoCategoryId?: number | string | null;
   /** AI视频讲解员（chat_app.id，管理端配置） */
   videoChatappId?: number | string | null;
+  /** AI视频模块别名（管理端配置，空=默认"AI视频"） */
+  videoAlias?: string | null;
+  /** VR模块别名（管理端配置，空=默认"虚拟空间"） */
+  vrAlias?: string | null;
   /** 智能体配置列表 */
   chatapps: MuseumChatApp[];
 }
