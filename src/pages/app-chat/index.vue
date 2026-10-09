@@ -679,6 +679,9 @@ let eventSource: EventSource | null = null;
 // 参数错误提示（无appId或应用不存在时显示"系统错误"，不做跳转）
 const pageError = ref('');
 
+// 智能体已停用/未在此博物馆开通：遮罩层阻断页面操作（进入页面检测 + 发消息失败兜底）
+const appDisabled = ref(false);
+
 // 初始化（按URL中的appId定位应用、建立SSE连接）
 async function init() {
   // 无appId：参数不合理，直接提示系统错误
@@ -701,6 +704,15 @@ async function init() {
       if (app.appShow?.startsWith('http://'))
         app.appShow = `https://${app.appShow.slice('http://'.length)}`;
       currentApp.value = app;
+      // 智能体可用性检测：博物馆配置中不含该智能体（已被停用）时遮罩提示并阻断初始化，
+      // 不加载欢迎语/预设问题/AI视频模块，不建立SSE连接（接口仅返回启用中的智能体）
+      if (urlMuseumId.value) {
+        const museum = await loadMuseumInfo();
+        if (museum && !(museum.chatapps || []).some(a => String(a.id) === String(urlAppId.value))) {
+          appDisabled.value = true;
+          return;
+        }
+      }
       // 预设问题模块放在对话流第一条；欢迎语紧随其后
       if (presetQuestions.value.length)
         addPresetItem();
@@ -1010,6 +1022,11 @@ async function startSSE(content: string) {
     // C端不弹错误信息框：接口失败仅控制台记录并复位加载态（SSE不会有内容推送）
     if (res.code !== 200) {
       console.error('对话接口返回错误:', res.msg);
+      // 智能体已被停用/移出该博物馆：显示遮罩层阻断页面操作
+      // （兜底场景：进入页面时未带museumId或博物馆信息加载失败，前置检测未触发）
+      if (res.msg?.includes('未在此博物馆开通')) {
+        appDisabled.value = true;
+      }
       // 日配额超限（后端文案"今日访问次数已达上限"）：AI气泡直接给出提示文案；
       // 不走updatePendingAssistant，避免该文案再被切分送去语音合成
       if (res.msg?.includes('已达上限')) {
@@ -1130,6 +1147,22 @@ function sendMessageByKey(key: number) {
         <Picture />
       </el-icon>
     </button>
+    <!-- 智能体已停用遮罩：覆盖页面阻断操作，z-index低于返回按钮保证可返回 -->
+    <div v-if="appDisabled" class="app-disabled-overlay">
+      <div class="disabled-card">
+        <div class="disabled-icon">
+          <el-icon :size="30">
+            <WarningFilled />
+          </el-icon>
+        </div>
+        <div class="disabled-title">
+          智能体暂不可用
+        </div>
+        <div class="disabled-desc">
+          该AI馆员已被停用，请联系管理员
+        </div>
+      </div>
+    </div>
     <!-- 参数错误提示：无appId或应用不存在 -->
     <div v-if="pageError" class="page-error">
       <div class="page-error-icon">
@@ -1960,6 +1993,58 @@ function sendMessageByKey(key: number) {
   }
 
   .page-error-desc {
+    max-width: 260px;
+    color: #a8abb2;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+/* 智能体已停用遮罩：半透明覆盖阻断页面交互，z-index(90)低于返回按钮(100)保证可返回 */
+.app-disabled-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(3px);
+  animation: page-error-in 0.35s ease both;
+
+  .disabled-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+    padding: 30px 28px;
+    text-align: center;
+    background: rgb(255 255 255 / 96%);
+    border-radius: 16px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 25%);
+  }
+
+  .disabled-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    height: 64px;
+    color: #d4884c;
+    background: linear-gradient(160deg, #fdf3e7 0%, #f9e8d2 100%);
+    border-radius: 50%;
+    box-shadow: 0 10px 24px rgb(212 136 76 / 18%);
+  }
+
+  .disabled-title {
+    color: #4e4e52;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  .disabled-desc {
     max-width: 260px;
     color: #a8abb2;
     font-size: 13px;
