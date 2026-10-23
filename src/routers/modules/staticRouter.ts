@@ -4,7 +4,12 @@ import { HOME_URL } from '@/config';
 export const layoutRouter: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: HOME_URL,
+    name: 'root',
+    // 访问根路径渲染空白页，不自动跳转聊天页（真实入口为 /museum、/app-chat 等带参数地址）
+    component: { render: () => null },
+  },
+  {
+    path: '/',
     component: () => import('@/layouts/index.vue'),
     children: [
       {

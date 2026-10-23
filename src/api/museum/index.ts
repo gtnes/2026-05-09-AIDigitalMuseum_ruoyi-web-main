@@ -6,13 +6,14 @@ const publicRequest = {
 };
 
 /** 清理URL（去除录入时可能误存的反引号/引号） */
-export function cleanUrl(url: string) {
+export function cleanUrl(url?: string | null) {
   return (url || '').replace(/^[`'"]+|[`'"]+$/g, '').trim();
 }
 
 /** 清洗博物馆数据中的URL字段 */
 function cleanMuseumInfo(info: MuseumInfo): MuseumInfo {
   info.logoUrl = cleanUrl(info.logoUrl);
+  info.introVoiceUrl = cleanUrl(info.introVoiceUrl);
   info.bannerUrl = cleanUrl(info.bannerUrl);
   info.vrUrl = cleanUrl(info.vrUrl);
   (info.chatapps || []).forEach((app) => {

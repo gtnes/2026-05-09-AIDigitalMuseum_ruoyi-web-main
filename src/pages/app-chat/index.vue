@@ -140,6 +140,20 @@ async function loadMuseumInfo(force = false): Promise<MuseumInfo | null> {
   }
 }
 
+// 从博物馆数据中提取当前智能体的语音配置：背景媒体加载与页面初始化共用，
+// init中提前应用可保证添加欢迎语时音色/开关/自动播报状态已就绪（欢迎语自动播报依赖）
+function applyChatappVoiceConfig(museum: MuseumInfo | null) {
+  const chatapp = (museum?.chatapps || []).find((a: MuseumChatApp) => String(a.id) === String(urlAppId.value));
+  if (!chatapp)
+    return;
+  // 智能体固定音色（AI语音管理配置的音色档案），未配置则语音功能不可用
+  currentVoiceProfileId.value = chatapp.voiceProfileId ?? null;
+  // 语音开关：旧数据null视为开启；关闭时不显示播报按钮、不发合成请求
+  voiceSwitchOn.value = chatapp.voiceEnabled !== false;
+  // 自动播报初始状态由管理端配置决定（会话内用户可用喇叭按钮切换）
+  autoPlayVoice.value = chatapp.voiceAutoPlay === true;
+}
+
 async function loadBgMedia(force = false) {
   try {
     const museum = await loadMuseumInfo(force);
@@ -149,13 +163,8 @@ async function loadBgMedia(force = false) {
         bgUrl.value = chatapp.bgUrl || '';
         idleImgUrl.value = chatapp.idleImgUrl || '';
         talkingGifUrl.value = chatapp.talkingGifUrl || '';
-        // 智能体固定音色（AI语音管理配置的音色档案），未配置则语音功能不可用
-        currentVoiceProfileId.value = chatapp.voiceProfileId ?? null;
-        // 语音开关：旧数据null视为开启；关闭时不显示播报按钮、不发合成请求
-        voiceSwitchOn.value = chatapp.voiceEnabled !== false;
-        // 自动播报初始状态由管理端配置决定（会话内用户可用喇叭按钮切换）
-        autoPlayVoice.value = chatapp.voiceAutoPlay === true;
       }
+      applyChatappVoiceConfig(museum);
     }
   }
   catch {
@@ -221,6 +230,22 @@ const SILENT_WAV_URL = 'data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB
 let audioUnlocked = false;
 // 解锁静音播放进行中标记：防止解锁完成后pause()误伤已被播放链接管的真实音频
 let unlockingAudio = false;
+// 首次手势解锁完成的通知队列：play()被自动播放策略拦截时挂起等待，解锁后重试播放
+// （如刷新页面后无任何用户手势，Chrome拒绝audio.play()——欢迎语请求已发但无法出声）
+let unlockWaiters: Array<() => void> = [];
+
+function flushUnlockWaiters() {
+  const ws = unlockWaiters;
+  unlockWaiters = [];
+  ws.forEach(w => w());
+}
+
+// 等待首次用户手势且共享元素解锁完成：已解锁（此前发生过交互）则立即放行
+function waitAudioUnlockAfterGesture(): Promise<void> {
+  if (audioUnlocked)
+    return Promise.resolve();
+  return new Promise(resolve => unlockWaiters.push(resolve));
+}
 
 // 微信内置浏览器（尤其iOS的WKWebView）要求audio.play()必须在用户手势的同步调用栈中执行。
 // 点击播报后首段音频需等待TTS合成（约1秒异步间隙），手势上下文已丢失，play()会被静默拒绝
@@ -235,8 +260,10 @@ function unlockAudioOnFirstTouch() {
   window.removeEventListener('click', unlockAudioOnFirstTouch);
   // 元素正在播放真实音频：此前已解锁过，不重设src干扰
   // （注意不能用playingKey判断：点喇叭后播放链先置位playingKey再等首段合成，恰是最需解锁的时刻）
-  if (audio && !audio.paused)
+  if (audio && !audio.paused) {
+    flushUnlockWaiters();
     return;
+  }
   const el = audio || (audio = new Audio());
   el.onended = null;
   el.onerror = null;
@@ -247,8 +274,10 @@ function unlockAudioOnFirstTouch() {
       unlockingAudio = false;
       el.pause();
     }
+    flushUnlockWaiters();
   }).catch(() => {
     unlockingAudio = false;
+    flushUnlockWaiters();
   });
 }
 window.addEventListener('touchend', unlockAudioOnFirstTouch);
@@ -579,7 +608,36 @@ function playAudio(key: number, dataUrl: string): Promise<void> {
       // 首段音频已返回并开播：结束加载动画
       if (ttsLoadingKey.value === key)
         ttsLoadingKey.value = null;
-    }).catch(done);
+    }).catch(async (err) => {
+      // 浏览器自动播放策略拦截（刷新页面后尚无用户手势）：挂起等待首次交互解锁后重播本段，
+      // 而非误判为播放完成跳过（否则整条消息被静默跳读）；其余错误仍按播完处理跳过该段
+      if (err?.name !== 'NotAllowedError' || settled) {
+        done();
+        return;
+      }
+      await waitAudioUnlockAfterGesture();
+      if (settled)
+        return; // 等待期间播放已被停止/切换
+      const el = audio;
+      if (!el) {
+        done();
+        return;
+      }
+      // 解锁流程会临时改写共享元素src并清空回调，恢复本段音频后重播
+      el.onended = done;
+      el.onerror = done;
+      el.src = dataUrl;
+      try {
+        await el.play();
+        if (!settled)
+          audioPlaying.value = true;
+        if (ttsLoadingKey.value === key)
+          ttsLoadingKey.value = null;
+      }
+      catch {
+        done();
+      }
+    });
   });
 }
 
@@ -708,6 +766,8 @@ async function init() {
       // 不加载欢迎语/预设问题/AI视频模块，不建立SSE连接（接口仅返回启用中的智能体）
       if (urlMuseumId.value) {
         const museum = await loadMuseumInfo();
+        // 提前应用语音配置（音色/开关/自动播报初始状态）：下方欢迎语自动播报的判定依赖这些状态
+        applyChatappVoiceConfig(museum);
         if (museum && !(museum.chatapps || []).some(a => String(a.id) === String(urlAppId.value))) {
           appDisabled.value = true;
           return;
@@ -716,8 +776,16 @@ async function init() {
       // 预设问题模块放在对话流第一条；欢迎语紧随其后
       if (presetQuestions.value.length)
         addPresetItem();
-      if (app.welcomeMsg)
+      if (app.welcomeMsg) {
         addMessage(app.welcomeMsg, false, true);
+        // 语音自动播报开启时，进入页面即自动播报欢迎语（复用AI回复的自动播报流水线）
+        const welcomeItem = getLastAssistantMessage();
+        if (welcomeItem) {
+          feedSegments(welcomeItem.key, app.welcomeMsg, false);
+          finishMessageTts(welcomeItem.key);
+          autoPlayIfEnabled(welcomeItem.key);
+        }
+      }
       // AI视频模块：当前智能体为博物馆视频讲解员时，加载并显示在欢迎语下方
       loadMuseumVideos();
     }

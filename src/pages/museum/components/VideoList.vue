@@ -13,6 +13,8 @@ const props = defineProps<{
   categoryId?: string | number | null;
   /** AI视频讲解员id（videoEnable开启时管理端配置，播放页通话用） */
   chatappId?: string | number | null;
+  /** 标签置顶（管理端配置的JSON数组字符串，命中的分类标签按此顺序排列在前） */
+  tagPins?: string | null;
 }>();
 
 const router = useRouter();
@@ -22,13 +24,30 @@ const loaded = ref(false);
 
 // 展示类别筛选（全部 + 去重后的展示类别）
 const activeCategory = ref('全部');
+
+// 标签置顶：JSON字符串解析为标签数组（空/非法值返回空数组）
+const pinnedTags = computed(() => {
+  try {
+    const v = JSON.parse(props.tagPins || '');
+    return Array.isArray(v)
+      ? v.map((t: unknown) => String(t).trim()).filter(Boolean)
+      : [];
+  }
+  catch {
+    return [];
+  }
+});
+
 const categoryOptions = computed(() => {
   const set = new Set<string>();
   videoList.value.forEach((v) => {
     if (v.showCategory)
       set.add(v.showCategory);
   });
-  return ['全部', ...Array.from(set)];
+  // "全部"固定首位；置顶标签（命中实际展示类别，不含"全部"）按配置顺序紧随其后，其余保持默认顺序
+  const pins = pinnedTags.value.filter(t => t !== '全部' && set.has(t));
+  const pinSet = new Set(pins);
+  return ['全部', ...pins, ...Array.from(set).filter(t => !pinSet.has(t))];
 });
 const filteredVideos = computed(() =>
   activeCategory.value === '全部'

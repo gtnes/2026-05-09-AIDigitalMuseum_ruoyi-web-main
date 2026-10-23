@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { MuseumChatApp, MuseumInfo } from '@/api/museum/types';
 import { Avatar, Compass, Microphone, Share as ShareIcon, VideoPlay } from '@element-plus/icons-vue';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { synthesizeMuseumTts } from '@/api/app-chat';
 import { cleanUrl, getMuseumInfo } from '@/api/museum';
 import ShareSheet from './components/ShareSheet.vue';
 import VideoList from './components/VideoList.vue';
@@ -61,8 +62,44 @@ function circleName(app: MuseumChatApp) {
   return app.duty?.trim() || displayName(app);
 }
 
+// ==================== 播报中形象切换（与app-chat一致） ====================
+// 简介播报出声时当前智能体显示说话gif，播放结束/停止回退待机图
+const introSpeaking = ref(false);
+// 说话gif加载失败的智能体id集合：失败后回退待机图，避免播报中显示裂图
+const talkingGifErrorIds = ref<Set<number | string>>(new Set());
+
+function characterImg(app: MuseumChatApp, active: boolean) {
+  const talk = app.talkingGifUrl && !talkingGifErrorIds.value.has(app.id) ? app.talkingGifUrl : '';
+  if (active && introSpeaking.value && talk)
+    return talk;
+  return app.idleImgUrl || talk;
+}
+
+function onCharacterImgError(app: MuseumChatApp) {
+  if (introSpeaking.value && app.talkingGifUrl)
+    talkingGifErrorIds.value.add(app.id);
+}
+
 // 通话按钮文案：与{当前激活智能体的duty}通话，duty为空时回退"AI馆员"
 const callLabel = computed(() => `与${currentApp.value?.duty?.trim() || 'AI馆员'}通话`);
+
+// ==================== 简介欢迎方式：滚动展示 + 语音播报 ====================
+// 欢迎方式=简介（welcomeMode=1且配置了文案）时，用滚动简介框替代欢迎语
+const isIntroMode = computed(() => museum.value?.welcomeMode === 1 && !!(museum.value?.introText || '').trim());
+const introText = computed(() => (museum.value?.introText || '').trim());
+
+// 简介配音音频地址：OSS签名链接为http://时https站点会被混合内容拦截，统一升级（S3签名与协议无关）
+const introVoiceUrl = computed(() => {
+  const url = museum.value?.introVoiceUrl || '';
+  return url.startsWith('http://') ? `https://${url.slice(7)}` : url;
+});
+
+// 简介语音合成音色：优先当前智能体配置的音色，未配置时回退任一已配置音色的智能体（后端校验音色需绑定本博物馆）
+const introVoiceProfileId = computed(() => {
+  if (currentApp.value?.voiceProfileId != null)
+    return currentApp.value.voiceProfileId;
+  return (museum.value?.chatapps || []).find(app => app.voiceProfileId != null)?.voiceProfileId ?? null;
+});
 
 // 虚拟空间：vrEnable=1 且 vrUrl 有值时才显示
 const vrUrl = computed(() => (museum.value ? cleanUrl(museum.value.vrUrl || '') : ''));
@@ -72,11 +109,19 @@ const showVrTab = computed(() => !!museum.value && museum.value.vrEnable === 1 &
 // 访问过一次后保持挂载，切换标签再回来不重新加载；刷新恢复停留在该标签时视为已访问（immediate覆盖）
 const vrVisited = ref(false);
 const videoVisited = ref(false);
-watch(activeTab, (tab) => {
+watch(activeTab, (tab, old) => {
   if (tab === 'vr')
     vrVisited.value = true;
   if (tab === 'video')
     videoVisited.value = true;
+  // immediate首次执行（old为undefined）时简介播报状态尚未声明（TDZ）且无播放，跳过
+  if (old === undefined)
+    return;
+  // 简介播报仅在AI馆员视图进行：切走即停止；切回时简介框可能首次可见需重测滚动参数
+  if (tab === 'ai')
+    updateIntroScroll();
+  else
+    stopIntroAudio();
 }, { immediate: true });
 
 // AI视频：videoEnable=1 时才显示
@@ -120,6 +165,9 @@ async function loadMuseum() {
     const res = await getMuseumInfo(museumId.value);
     if (res.code === 200 && res.data) {
       museum.value = res.data;
+      // 简介模式：数据就绪后启动语音播报（滚动展示由模板渲染+updateIntroScroll测量驱动）
+      if (res.data.isExpire !== 1)
+        startIntroPlayback();
     }
     else {
       errorMsg.value = res.msg || '未找到博物馆信息';
@@ -208,6 +256,241 @@ function onPointerUp() {
   else if (dx >= 60 && pageIndex.value > 0)
     pageIndex.value--;
 }
+
+// ==================== 简介滚动展示 ====================
+// 文案超出框高时纵向匀速滚动，时长按内容高度计算，整段滚出后循环
+const introViewportRef = ref<HTMLElement | null>(null);
+const introTextRef = ref<HTMLElement | null>(null);
+const introNeedsScroll = ref(false);
+const introScrollDuration = ref(20);
+// 滚动速度（像素/秒）：管理端可配置，未配置/非法值回退24
+const introScrollSpeed = computed(() => {
+  const v = museum.value?.introScrollSpeed;
+  return typeof v === 'number' && v > 0 ? v : 24;
+});
+
+function updateIntroScroll() {
+  nextTick(() => {
+    const viewport = introViewportRef.value;
+    const text = introTextRef.value;
+    if (!viewport || !text)
+      return;
+    const innerH = viewport.clientHeight;
+    const contentH = text.scrollHeight;
+    introNeedsScroll.value = contentH > innerH + 4;
+    if (introNeedsScroll.value)
+      introScrollDuration.value = Math.max(6, Math.ceil((contentH + innerH) / introScrollSpeed.value));
+  });
+}
+// 简介文案就绪后（DOM渲染完成）测量一次滚动参数
+watch(introText, updateIntroScroll);
+
+// ==================== 简介语音播报（与app-chat一致的自动播放解锁策略） ====================
+// 复用同一音频元素：微信/iOS WebView的音频解锁绑定在元素上，手势内成功播放过一次后续换src不再要求手势
+let introAudioEl: HTMLAudioElement | null = null;
+// 当前音频播放结束的回调（停止播报时手动触发，使播放链退出等待）
+let introAudioDone: (() => void) | null = null;
+// 播放会话代号：每次停止/重新播放时+1，旧的异步播放链检测到变化自动退出
+let introPlaySession = 0;
+
+// 极短静音音频（8kHz/8bit/单声道，20ms）：仅用于在用户手势内"点亮"共享音频元素
+const SILENT_WAV_URL = 'data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YaAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA';
+let audioUnlocked = false;
+// 解锁静音播放进行中标记：防止解锁完成后pause()误伤已被播放链接管的真实音频
+let unlockingAudio = false;
+// 首次手势解锁完成的通知队列：play()被自动播放策略拦截时挂起等待，解锁后重试播放
+// （如直接打开链接/刷新后无任何用户手势，Chrome拒绝audio.play()——需首次触摸/点击后才能出声）
+let unlockWaiters: Array<() => void> = [];
+
+function flushUnlockWaiters() {
+  const ws = unlockWaiters;
+  unlockWaiters = [];
+  ws.forEach(w => w());
+}
+
+// 等待首次用户手势且共享元素解锁完成：已解锁（此前发生过交互）则立即放行
+function waitAudioUnlock(): Promise<void> {
+  if (audioUnlocked)
+    return Promise.resolve();
+  return new Promise(resolve => unlockWaiters.push(resolve));
+}
+
+// 首次用户交互（点任何地方）时，在手势同步栈内用共享元素播放极短静音完成解锁
+function unlockAudioOnFirstTouch() {
+  if (audioUnlocked)
+    return;
+  audioUnlocked = true;
+  window.removeEventListener('touchend', unlockAudioOnFirstTouch);
+  window.removeEventListener('click', unlockAudioOnFirstTouch);
+  // 元素正在播放真实音频：此前已解锁过，不重设src干扰
+  if (introAudioEl && !introAudioEl.paused) {
+    flushUnlockWaiters();
+    return;
+  }
+  const el = introAudioEl || (introAudioEl = new Audio());
+  el.onended = null;
+  el.onerror = null;
+  el.src = SILENT_WAV_URL;
+  unlockingAudio = true;
+  el.play().then(() => {
+    if (unlockingAudio) {
+      unlockingAudio = false;
+      el.pause();
+    }
+    flushUnlockWaiters();
+  }).catch(() => {
+    unlockingAudio = false;
+    flushUnlockWaiters();
+  });
+}
+window.addEventListener('touchend', unlockAudioOnFirstTouch);
+window.addEventListener('click', unlockAudioOnFirstTouch);
+
+// 播放一段音频（上传配音URL或TTS dataUrl），播完/出错/被停止时resolve；出声期间置说话态
+function playIntroSegment(url: string, session: number): Promise<void> {
+  return new Promise((resolve) => {
+    const el = introAudioEl || (introAudioEl = new Audio());
+    unlockingAudio = false; // 播放链接管元素，解锁流程的pause()不再生效
+    let settled = false;
+    const done = () => {
+      if (settled)
+        return;
+      settled = true;
+      introSpeaking.value = false;
+      introAudioDone = null;
+      resolve();
+    };
+    introAudioDone = done;
+    el.onended = done;
+    el.onerror = done;
+    el.src = url;
+    el.play().then(() => {
+      // play()成功出声后再置说话态（已被停止时settled为true，不误标）
+      if (!settled)
+        introSpeaking.value = true;
+    }).catch(async (err) => {
+      // 无用户手势被拒（直接打开链接/刷新后）：挂起等待首次交互解锁后重播，其余错误按播完跳过
+      if (err?.name !== 'NotAllowedError' || settled || session !== introPlaySession) {
+        done();
+        return;
+      }
+      await waitAudioUnlock();
+      if (settled || session !== introPlaySession)
+        return;
+      el.onended = done;
+      el.onerror = done;
+      introAudioDone = done;
+      el.src = url;
+      try {
+        await el.play();
+        if (!settled)
+          introSpeaking.value = true;
+      }
+      catch {
+        done();
+      }
+    });
+  });
+}
+
+// 停止简介播报：会话+1使旧播放链退出，并中断当前音频
+function stopIntroAudio() {
+  introPlaySession++;
+  introSpeaking.value = false;
+  const done = introAudioDone;
+  introAudioDone = null;
+  if (introAudioEl) {
+    introAudioEl.onended = null;
+    introAudioEl.onerror = null;
+    introAudioEl.pause();
+  }
+  done?.();
+}
+
+// 按句读把简介切成朗读段（与app-chat分段策略一致，避免单次合成文本过长）
+const INTRO_SEG_MIN = 24;
+const INTRO_SEG_MAX = 80;
+function cutIntroSegments(text: string): string[] {
+  const segs: string[] = [];
+  let start = 0;
+  let lastSentence = -1;
+  let lastClause = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    if (/[。！？!?…；;]/.test(ch))
+      lastSentence = i;
+    else if (/[，,、：:）)”"\n]/.test(ch))
+      lastClause = i;
+    const len = i - start + 1;
+    if (lastSentence >= start && len >= INTRO_SEG_MIN) {
+      segs.push(text.slice(start, lastSentence + 1));
+      start = lastSentence + 1;
+      lastSentence = -1;
+      lastClause = -1;
+    }
+    else if (lastClause >= start && len >= INTRO_SEG_MAX) {
+      segs.push(text.slice(start, lastClause + 1));
+      start = lastClause + 1;
+      lastSentence = -1;
+      lastClause = -1;
+    }
+  }
+  if (start < text.length)
+    segs.push(text.slice(start));
+  return segs;
+}
+
+// 语音合成播报：按段串行合成播放（音色来自智能体配置），失败段静默跳过
+async function playIntroTts(session: number) {
+  const text = introText.value;
+  const voiceId = introVoiceProfileId.value;
+  if (!text || voiceId == null || !museumId.value)
+    return;
+  for (const seg of cutIntroSegments(text)) {
+    if (session !== introPlaySession)
+      return;
+    try {
+      const res = await synthesizeMuseumTts({ museumId: museumId.value, voiceId, text: seg });
+      if (session !== introPlaySession)
+        return;
+      if (res.code === 200 && res.data?.dataUrl)
+        await playIntroSegment(res.data.dataUrl, session);
+      // 合成失败（含额度超限等）静默跳过该段，不影响滚动展示
+    }
+    catch {
+      // 网络异常跳过该段
+    }
+  }
+}
+
+// 简介播报入口：仅AI馆员视图启动（刷新恢复到AI视频/VR标签时不播）；上传配音直接播放；语音合成（introVoiceMode=2或空值）按段合成播放
+function startIntroPlayback() {
+  const m = museum.value;
+  if (activeTab.value !== 'ai')
+    return;
+  if (!m || m.welcomeMode !== 1 || m.introVoiceEnable !== 1)
+    return;
+  stopIntroAudio();
+  const session = introPlaySession;
+  if (m.introVoiceMode === 1) {
+    if (introVoiceUrl.value)
+      void playIntroSegment(introVoiceUrl.value, session);
+  }
+  else {
+    void playIntroTts(session);
+  }
+}
+
+// KeepAlive离开本页（如进入对话页）时停止播报；返回不自动重播（进场已播过一次）
+onDeactivated(() => {
+  stopIntroAudio();
+});
+
+onUnmounted(() => {
+  stopIntroAudio();
+  window.removeEventListener('touchend', unlockAudioOnFirstTouch);
+  window.removeEventListener('click', unlockAudioOnFirstTouch);
+});
 </script>
 
 <template>
@@ -279,15 +562,37 @@ function onPointerUp() {
                 transition: dragging ? 'none' : 'transform 0.35s ease',
               }"
             >
-              <div v-for="app in apps" :key="app.id" class="app-page">
+              <div v-for="(app, i) in apps" :key="app.id" class="app-page">
                 <img v-if="app.bgUrl" :src="app.bgUrl" class="page-bg" alt="" draggable="false">
-                <img v-if="app.idleImgUrl" :src="app.idleImgUrl" class="page-character" alt="" draggable="false">
+                <!-- 简介播报出声时当前智能体切换说话gif，播放结束回退待机图 -->
+                <img
+                  v-if="characterImg(app, i === pageIndex)"
+                  :src="characterImg(app, i === pageIndex)"
+                  class="page-character"
+                  alt=""
+                  draggable="false"
+                  @error="onCharacterImgError(app)"
+                >
               </div>
             </div>
 
-            <!-- 欢迎语 -->
-            <div v-if="currentApp" class="greeting">
+            <!-- 欢迎语：欢迎方式=欢迎语（默认） -->
+            <div v-if="currentApp && !isIntroMode" class="greeting">
               你好，我是{{ displayName(currentApp) }}
+            </div>
+
+            <!-- 简介：欢迎方式=简介，超出高度时纵向滚动展示 -->
+            <div v-else-if="currentApp" class="intro-box">
+              <div ref="introViewportRef" class="intro-viewport">
+                <div
+                  ref="introTextRef"
+                  class="intro-text"
+                  :class="{ scrolling: introNeedsScroll }"
+                  :style="introNeedsScroll ? { animationDuration: `${introScrollDuration}s` } : undefined"
+                >
+                  {{ introText }}
+                </div>
+              </div>
             </div>
 
             <!-- 通话按钮 -->
@@ -306,12 +611,13 @@ function onPointerUp() {
             :museum-id="museumId"
             :category-id="museum.videoCategoryId"
             :chatapp-id="museum.videoChatappId"
+            :tag-pins="museum.videoTagPins"
           />
         </div>
 
         <!-- 虚拟空间视图：vr开关关闭时用v-if完全不挂载，避免iframe加载页面 -->
         <div v-if="showVrTab && vrVisited" v-show="activeTab === 'vr'" class="tab-view">
-          <VirtualSpace :url="vrUrl" />
+          <VirtualSpace :url="vrUrl" :visible="activeTab === 'vr'" />
         </div>
 
         <!-- 底部导航 -->
@@ -592,6 +898,70 @@ function onPointerUp() {
   transform: translateX(-50%);
   pointer-events: none;
   box-sizing: border-box;
+}
+
+/* ==================== 简介滚动框（欢迎方式=简介） ====================
+   高度48px、宽度80%、半透明背景；文案过长时纵向匀速滚动，短文案垂直居中静态展示 */
+.intro-box {
+  position: absolute;
+  left: 50%;
+  bottom: 215px;
+  z-index: 20;
+  width: 90%;
+  height: 48px;
+  box-sizing: border-box;
+  /* 与欢迎语同色系的半透明背景（中间实、两侧渐隐） */
+  background: linear-gradient(
+    90deg,
+    rgb(98 68 63 / 0%) 0%,
+    rgb(98 68 63 / 55%) 8%,
+    rgb(98 68 63 / 55%) 92%,
+    rgb(98 68 63 / 0%) 100%
+  );
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.6;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* 滚动视口：上下渐隐遮罩，滚动时文字出入更柔和（40px = 48px框高 - 上下留白4px*2） */
+.intro-viewport {
+  position: absolute;
+  inset: 4px 16px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+}
+
+.intro-text {
+  white-space: pre-line;
+  word-break: break-all;
+  text-align: center;
+
+  /* 短文案不滚动时垂直居中 */
+  &:not(.scrolling) {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    left: 0;
+    transform: translateY(-50%);
+  }
+
+  &.scrolling {
+    animation: intro-scroll linear infinite;
+  }
+}
+
+/* 从视口底部完整进入、整段滚出后循环（40px与.intro-viewport内框高一致） */
+@keyframes intro-scroll {
+  from {
+    transform: translateY(40px);
+  }
+
+  to {
+    transform: translateY(-100%);
+  }
 }
 
 /* 通话按钮 */

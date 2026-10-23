@@ -54,8 +54,22 @@ export interface MuseumInfo {
   videoChatappId?: number | string | null;
   /** AI视频模块别名（管理端配置，空=默认"AI视频"） */
   videoAlias?: string | null;
-  /** VR模块别名（管理端配置，空=默认"虚拟空间"） */
+  /** AI视频标签置顶（JSON数组字符串，命中的展示类别按此顺序排列在前） */
+  videoTagPins?: string | null;
+  /** VR模块别名（空=默认"虚拟空间"） */
   vrAlias?: string | null;
+  /** AI馆员页面欢迎方式（0欢迎语 1简介，空=欢迎语） */
+  welcomeMode?: 0 | 1 | null;
+  /** 简介文案（welcomeMode=1时滚动展示） */
+  introText?: string | null;
+  /** 简介语音播报开关（0关闭 1开启） */
+  introVoiceEnable?: 0 | 1 | null;
+  /** 简介朗读方式（1上传配音 2语音合成，空=语音合成） */
+  introVoiceMode?: 1 | 2 | null;
+  /** 简介配音音频URL（朗读方式=上传配音时播放） */
+  introVoiceUrl?: string | null;
+  /** 简介滚动速度（像素/秒，空=默认24） */
+  introScrollSpeed?: number | null;
   /** 智能体配置列表 */
   chatapps: MuseumChatApp[];
 }
