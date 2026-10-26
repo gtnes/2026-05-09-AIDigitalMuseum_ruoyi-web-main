@@ -101,6 +101,16 @@ const introVoiceProfileId = computed(() => {
   return (museum.value?.chatapps || []).find(app => app.voiceProfileId != null)?.voiceProfileId ?? null;
 });
 
+// ==================== 欢迎模态框（首次打开） ====================
+// 浏览器限制首次必须经用户手势才能播放音频：AI馆员页面首次打开先显示欢迎模态框，
+// 点击"开始参观"既是解锁音频播放的用户手势，也作为简介播报与滚动展示的启动开关
+const welcomeVisible = ref(false);
+
+function onStartVisit() {
+  welcomeVisible.value = false;
+  startIntroPlayback();
+}
+
 // 虚拟空间：vrEnable=1 且 vrUrl 有值时才显示
 const vrUrl = computed(() => (museum.value ? cleanUrl(museum.value.vrUrl || '') : ''));
 const showVrTab = computed(() => !!museum.value && museum.value.vrEnable === 1 && !!vrUrl.value);
@@ -165,9 +175,9 @@ async function loadMuseum() {
     const res = await getMuseumInfo(museumId.value);
     if (res.code === 200 && res.data) {
       museum.value = res.data;
-      // 简介模式：数据就绪后启动语音播报（滚动展示由模板渲染+updateIntroScroll测量驱动）
+      // 首次打开显示欢迎模态框，点击"开始参观"（用户手势）后再启动简介播报，规避浏览器自动播放限制
       if (res.data.isExpire !== 1)
-        startIntroPlayback();
+        welcomeVisible.value = true;
     }
     else {
       errorMsg.value = res.msg || '未找到博物馆信息';
@@ -587,7 +597,7 @@ onUnmounted(() => {
                 <div
                   ref="introTextRef"
                   class="intro-text"
-                  :class="{ scrolling: introNeedsScroll }"
+                  :class="{ scrolling: introNeedsScroll && !welcomeVisible }"
                   :style="introNeedsScroll ? { animationDuration: `${introScrollDuration}s` } : undefined"
                 >
                   {{ introText }}
@@ -636,6 +646,22 @@ onUnmounted(() => {
           </button>
         </div>
       </template>
+
+      <!-- 欢迎模态框：首次打开AI馆员页面显示，点击"开始参观"后启动简介播报与滚动 -->
+      <div v-if="welcomeVisible && museum" class="welcome-overlay">
+        <div class="welcome-card">
+          <img v-if="museum.logoUrl" :src="museum.logoUrl" class="welcome-logo" alt="">
+          <p class="welcome-text">
+            欢迎参观
+          </p>
+          <h2 class="welcome-title">
+            {{ museum.title }}
+          </h2>
+          <button class="welcome-btn" @click="onStartVisit">
+            开始参观
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 分享抽屉（独立组件） -->
@@ -691,6 +717,98 @@ onUnmounted(() => {
   height: 64px;
   border-radius: 50%;
   object-fit: cover;
+}
+
+/* ==================== 欢迎模态框（首次打开） ==================== */
+.welcome-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgb(0 0 0 / 62%);
+  backdrop-filter: blur(6px);
+  box-sizing: border-box;
+  animation: welcome-fade 0.3s ease;
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 340px;
+  padding: 34px 28px 30px;
+  border: 1px solid rgb(232 167 101 / 35%);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #33291f, #211b14);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 55%);
+  box-sizing: border-box;
+  animation: welcome-pop 0.35s ease;
+}
+
+.welcome-logo {
+  width: 64px;
+  height: 64px;
+  /* 圆形垂直中心与卡片上边缘重合：负margin上移padding-top(34px)+半高(32px)，横跨卡片顶部 */
+  margin-top: -66px;
+  border: 2px solid rgb(232 167 101 / 55%);
+  border-radius: 50%;
+  object-fit: cover;
+  box-sizing: border-box;
+}
+
+.welcome-text {
+  margin: 0;
+  color: rgb(255 255 255 / 70%);
+  font-size: 15px;
+  letter-spacing: 2px;
+}
+
+.welcome-title {
+  margin: 0;
+  max-width: 100%;
+  color: #e8a765;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  word-break: break-all;
+}
+
+.welcome-btn {
+  margin-top: 10px;
+  padding: 12px 46px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #e8a765, #c9822f);
+  color: #fff;
+  font-size: 16px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease;
+
+  &:active {
+    transform: scale(0.96);
+  }
+}
+
+@keyframes welcome-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes welcome-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
 }
 
 /* ==================== AI馆员视图 ==================== */
