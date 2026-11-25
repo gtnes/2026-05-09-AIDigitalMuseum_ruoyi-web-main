@@ -17,12 +17,15 @@ const router = useRouter();
 
 // 返回上一个页面（从博物馆页进入时返回博物馆）
 function goBack() {
-  if (window.history.length > 1) {
+  // 用vue-router写在history.state里的来路判断：为null表示本页是本次打开的第一个页面（直达/分享链接），没有上一页
+  const prevPath = (window.history.state as { back?: string | null } | null)?.back;
+  if (prevPath) {
     router.back();
+    return;
   }
-  else {
-    router.push('/museum');
-  }
+  // 没有上一页：带博物馆id时回博物馆主页（不带id主页会缺参数打不开），否则回通用聊天页
+  const museumId = (route.query.museumId as string) || '';
+  router.push(museumId ? { path: '/museum', query: { id: museumId } } : '/chat');
 }
 
 type MessageItem = BubbleProps & {
