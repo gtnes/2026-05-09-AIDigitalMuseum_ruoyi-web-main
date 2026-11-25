@@ -17,12 +17,13 @@ const userStore = useUserStore();
 
 // 返回上一个页面
 function goBack() {
-  if (window.history.length > 1) {
+  // 用vue-router写在history.state里的来路判断：为null表示本页是本次打开的第一个页面（直达/分享链接），没有上一页
+  const prevPath = (window.history.state as { back?: string | null } | null)?.back;
+  if (prevPath) {
     router.back();
+    return;
   }
-  else {
-    router.push('/chat');
-  }
+  router.push('/chat');
 }
 
 type MessageItem = BubbleProps & {
