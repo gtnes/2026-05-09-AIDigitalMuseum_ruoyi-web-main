@@ -137,7 +137,8 @@ onMounted(async () => {
       v.coverUrl = (v.coverUrl || '').replace(/^[`'"]+|[`'"]+$/g, '').trim();
       v.videoUrl = (v.videoUrl || '').replace(/^[`'"]+|[`'"]+$/g, '').trim();
     });
-    videoList.value = res.data || [];
+    // 重新排序：置顶在前、显示顺序升序，同一显示顺序下新上传的视频排在最前（接口默认按id升序，新视频会落在末尾）
+    videoList.value = sortVideos(res.data || []);
   }
   catch {}
   loaded.value = true;
@@ -188,6 +189,29 @@ function formatDuration(sec?: number) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/* ==================== 列表排序 ==================== */
+// 置顶在前 → 显示顺序升序（空值按0）→ id倒序（同一显示顺序下新上传的视频排在最前）
+function sortVideos(list: MuseumVideo[]) {
+  return [...list].sort((a, b) => {
+    const topDiff = (b.topFlag === 1 ? 1 : 0) - (a.topFlag === 1 ? 1 : 0);
+    if (topDiff)
+      return topDiff;
+    const sortDiff = (a.sort ?? 0) - (b.sort ?? 0);
+    if (sortDiff)
+      return sortDiff;
+    return compareIdDesc(a.id, b.id);
+  });
+}
+
+// id可能是超出Number安全整数范围的雪花字符串，按位数+字典序倒序比较，避免数值转换丢精度
+function compareIdDesc(a: MuseumVideo['id'], b: MuseumVideo['id']) {
+  const sa = String(a);
+  const sb = String(b);
+  if (/^\d+$/.test(sa) && /^\d+$/.test(sb) && sa.length !== sb.length)
+    return sb.length - sa.length;
+  return sb.localeCompare(sa);
 }
 </script>
 
