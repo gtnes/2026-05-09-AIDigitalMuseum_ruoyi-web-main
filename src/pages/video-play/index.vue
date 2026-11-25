@@ -117,18 +117,21 @@ function toggleOrientation() {
   isLandscape.value = !isLandscape.value;
 }
 
-// 返回：横屏时先切回竖屏，竖屏时返回上一页面
+// 返回：横屏时先切回竖屏；竖屏时返回上一页面，没有上一页（如分享链接直接打开）则回博物馆主页
 function goBack() {
   if (isLandscape.value) {
     isLandscape.value = false;
     return;
   }
-  if (window.history.length > 1) {
+  // vue-router把站内来路地址写进history.state.back：为null表示本页是本次打开的第一个页面（直达/分享链接），没有可返回的上一页
+  // 不能用window.history.length判断：同一标签页里之前浏览过别的页面时该值也会大于1，但back()过去并不是站内上一页
+  const prevPath = (window.history.state as { back?: string | null } | null)?.back;
+  if (prevPath) {
     router.back();
+    return;
   }
-  else {
-    router.push('/museum');
-  }
+  // 没有上一页：回主页并带上博物馆id，避免主页缺参数打不开
+  router.push(museumId.value ? { path: '/museum', query: { id: museumId.value } } : '/museum');
 }
 
 // 预设问题：与对话页一致的模块（每页3个，点击刷新轮换，更多/收起）
